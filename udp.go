@@ -12,7 +12,7 @@ import (
 )
 
 // 主要是给测试提供方法
-func Dial(network, raddr string, data []byte, write int) *net.UDPConn {
+func DialNormal(network, raddr string, data []byte, write int) *net.UDPConn {
 	ra, err := net.ResolveUDPAddr(network, raddr)
 	if err != nil {
 		panic(err)

@@ -59,7 +59,7 @@ func handle(conn net.Conn) {
 }
 
 func client(network, raddr string, data []byte) {
-	uconn, err := udpx.UdpDial(context.Background(), "udp", "", "127.0.0.1:3333")
+	uconn, err := udpx.Dial(context.Background(), "", "127.0.0.1:3333")
 	if err != nil {
 		log.Panic(err)
 	}

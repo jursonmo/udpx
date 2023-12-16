@@ -8,8 +8,8 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-func UdpDial(ctx context.Context, network, laddr, raddr string, opts ...UDPConnOpt) (net.Conn, error) {
-	return DialWithOpt(ctx, network, laddr, raddr, opts...)
+func Dial(ctx context.Context, laddr, raddr string, opts ...UDPConnOpt) (net.Conn, error) {
+	return DialWithOpt(ctx, "udp", laddr, raddr, opts...)
 }
 
 func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPConnOpt) (*UDPConn, error) {
