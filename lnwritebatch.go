@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 
+	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
 )
 
@@ -51,14 +52,15 @@ func (l *Listener) WriteBatchAble() bool {
 	return l.writeBatchAble
 }
 
-func (l *Listener) writeBatchLoop() {
+func (l *Listener) writeBatchLoop() (err error) {
 	bw, _ := NewPCBioWriter(l.pc, l.batchs)
 	l.writeBatchAble = true
 	defer func() { l.writeBatchAble = false }()
 	log.Printf("%v, writeBatchLoop started", l)
-	defer log.Printf("%v, writeBatchLoop quit", l)
+	defer func() { log.Printf("%v, writeBatchLoop quit, err:%+v", l, err) }()
 
-	bw.WriteBatchLoop(l.txqueue)
+	err = bw.WriteBatchLoop(l.txqueue)
+	return
 	/*
 		var err error
 		for b := range l.txqueue {
@@ -253,7 +255,7 @@ func (w *writeBatchMsg) commit(sended int) {
 	}
 }
 
-func (bw *PCBufioWriter) WriteBatchLoop(fromCh chan MyBuffer) {
+func (bw *PCBufioWriter) WriteBatchLoop(fromCh chan MyBuffer) error {
 	var err error
 	for b := range fromCh {
 		//为什么不把"data[]byte 转换成Mybuffer" 放在WriteWithBatch()实现,而不放在这里实现呢,
@@ -262,15 +264,14 @@ func (bw *PCBufioWriter) WriteBatchLoop(fromCh chan MyBuffer) {
 		//如果把[]byte 放在txqueue 队列里, 那么这个data []byte 在生成MyBuffer前，可能被修改了.
 		_, err = bw.Write(b)
 		if err != nil {
-			log.Println(err)
-			return
+			return pkgerr.Wrap(err, "bw.Write() fail")
 		}
 		if len(fromCh) == 0 && bw.Buffered() > 0 {
 			err = bw.Flush()
 			if err != nil {
-				log.Println(err)
-				return
+				return pkgerr.Wrap(err, "bw.Flush() fail")
 			}
 		}
 	}
+	return pkgerr.New("channel closed in WriteBatchLoop")
 }
