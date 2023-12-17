@@ -217,10 +217,7 @@ func (w *writeBatchMsg) addMsg(b MyBuffer) (flush bool) {
 	ms := ipv4.Message{Buffers: [][]byte{b.Bytes()}, Addr: b.GetAddr()}
 	w.wms = append(w.wms, ms)
 	w.buffers = append(w.buffers, b)
-	if len(w.wms) == cap(w.wms) {
-		return true
-	}
-	return false
+	return len(w.wms) == cap(w.wms)
 }
 
 // 获取需要发送的消息
