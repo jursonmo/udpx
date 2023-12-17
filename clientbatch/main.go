@@ -10,6 +10,7 @@ import (
 	"github.com/jursonmo/udpx"
 )
 
+// 测试服务器和client 是否批量读写数据。
 func main() {
 	log.Printf("runtime.GOMAXPROCS(0):%d\n", runtime.GOMAXPROCS(0))
 	go server()
@@ -20,7 +21,7 @@ func main() {
 }
 
 func server() {
-	//以 udpx.WithListenerNum(2)为准，或者配置udpx.WithReuseport(true)，让系统根据GOMAXPROCS来决定
+	//以 udpx.WithListenerNum(2)为准，或者开启Reuseport:udpx.WithReuseport(true)，让系统根据GOMAXPROCS来决定
 	l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithListenerNum(2))
 	//l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithReuseport(true))
 	if err != nil {

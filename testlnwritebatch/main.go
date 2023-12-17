@@ -9,6 +9,7 @@ import (
 	"github.com/jursonmo/udpx"
 )
 
+// 主要是测试服务端是否可以批量flush 发送数据
 func main() {
 	go server()
 	time.Sleep(time.Second)
