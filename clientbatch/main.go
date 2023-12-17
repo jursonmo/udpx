@@ -12,6 +12,8 @@ import (
 
 // 测试服务器和client 是否批量读写数据。
 func main() {
+	udpx.SetMode(udpx.DebugMode) //设置debug 模式，会打印每次批量收发操作的日志，跑性能的时候不能用这种模式。
+
 	log.Printf("runtime.GOMAXPROCS(0):%d\n", runtime.GOMAXPROCS(0))
 	go server()
 	time.Sleep(time.Second)

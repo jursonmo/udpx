@@ -94,8 +94,9 @@ func (c *UDPConn) readBatchLoopv2() {
 			c.Close()
 			panic(err)
 		}
-		log.Printf("readBatchLoopv2 client:%v->%v, batch got n:%d, len(ms):%d\n", c.LocalAddr(), c.RemoteAddr(), n, len(rms))
-
+		if gMode == DebugMode {
+			log.Printf("readBatchLoopv2 client:%v->%v, batch got n:%d, len(ms):%d\n", c.LocalAddr(), c.RemoteAddr(), n, len(rms))
+		}
 		if n == 0 {
 			continue
 		}

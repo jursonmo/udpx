@@ -183,7 +183,9 @@ func (bw *PCBufioWriter) Buffered() int {
 
 // not return until flush all msg; 直到发送完缓存中的所有数据才返回
 func (bw *PCBufioWriter) Flush() error {
-	log.Printf("local %v, flushing %d packet....", bw.pc.LocalAddr(), len(bw.wms))
+	if gMode == DebugMode {
+		log.Printf("local %v, flushing %d packet....", bw.pc.LocalAddr(), len(bw.wms))
+	}
 	if bw.err != nil {
 		return bw.err
 	}

@@ -11,6 +11,8 @@ import (
 
 // 主要是测试服务端是否可以批量flush 发送数据
 func main() {
+	udpx.SetMode(udpx.DebugMode) //设置debug 模式，会打印每次批量收发操作的日志，跑性能的时候不能用这种模式。
+
 	go server()
 	time.Sleep(time.Second)
 

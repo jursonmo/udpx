@@ -15,6 +15,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	ProMode   = 0 //生产环境
+	DebugMode = 1 //debug打印环境,跑性能的时候不能用这种模式。
+)
+
+var gMode int
+
+func SetMode(m int) {
+	gMode = m
+}
+
 var ErrLnClosed = errors.New("udp listener closed")
 
 type LnCfgOptions func(*ListenConfig)
@@ -204,6 +215,7 @@ type Listener struct {
 	id    int
 	lconn *net.UDPConn
 	pc    *ipv4.PacketConn
+	mode  int
 	//ln      net.Listener
 	clients        sync.Map
 	accept         chan *UDPConn
@@ -234,8 +246,14 @@ func WithLnMaxPacketSize(n int) ListenerOpt {
 	}
 }
 
+func WithMode(m int) ListenerOpt {
+	return func(l *Listener) {
+		l.mode = m
+	}
+}
+
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode}
 	for _, opt := range opts {
 		opt(l)
 	}
