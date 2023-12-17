@@ -4,12 +4,14 @@ import (
 	"context"
 	"log"
 	"net"
+	"runtime"
 	"time"
 
 	"github.com/jursonmo/udpx"
 )
 
 func main() {
+	log.Printf("runtime.GOMAXPROCS(0):%d\n", runtime.GOMAXPROCS(0)) // udpx.WithListenerNum(2)
 	go server()
 	time.Sleep(time.Second)
 
@@ -43,7 +45,7 @@ func handle(conn net.Conn) {
 		if err != nil {
 			panic(err)
 		}
-		log.Printf("i:%d, server recv data:%s, and write back", i, string(buf[:n]))
+		log.Printf("server, i:%d, recv data:%s, and write back", i, string(buf[:n]))
 		i++
 		wn, err := conn.Write(buf[:n])
 		if err != nil {
@@ -71,7 +73,7 @@ func client(network, raddr string, data []byte) {
 			}
 			panic(err)
 		}
-		log.Printf("%d, conn local:%s->%s, write data len:%d", i, uconn.LocalAddr().String(),
+		log.Printf("client:%d, conn local:%s->%s, write data len:%d", i, uconn.LocalAddr().String(),
 			uconn.RemoteAddr().String(), n)
 	}
 	buf := make([]byte, 1600)
@@ -81,7 +83,7 @@ func client(network, raddr string, data []byte) {
 		if err != nil {
 			panic(err)
 		}
-		log.Printf("i:%d, client recv data:%s", i, string(buf[:n]))
+		log.Printf("client, i:%d, recv data:%s", i, string(buf[:n]))
 		i++
 	}
 }

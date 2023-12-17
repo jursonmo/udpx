@@ -55,7 +55,8 @@ func (l *Listener) writeBatchLoop() {
 	bw, _ := NewPCBioWriter(l.pc, l.batchs)
 	l.writeBatchAble = true
 	defer func() { l.writeBatchAble = false }()
-	defer log.Printf("id:%d, listener %v, writeBatchLoop quit", l.id, l.pc.LocalAddr())
+	log.Printf("%v, writeBatchLoop started", l)
+	defer log.Printf("%v, writeBatchLoop quit", l)
 
 	bw.WriteBatchLoop(l.txqueue)
 	/*

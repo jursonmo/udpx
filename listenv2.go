@@ -15,7 +15,7 @@ func (l *Listener) readBatchLoopv2() {
 	rms := make([]ipv4.Message, l.batchs)
 	buffers := make([]MyBuffer, l.batchs)
 	n := len(rms)
-	log.Printf("listener, id:%d, batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....", l.id, l.batchs, l.maxPacketSize)
+	log.Printf("listener started, id:%d, batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....", l.id, l.batchs, l.maxPacketSize)
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)

@@ -77,7 +77,7 @@ func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOption
 	if err != nil {
 		return nil, err
 	}
-
+	log.Printf("ListenConfig:%+v\n", cfg)
 	ln := &UdpListen{ctx: ctx, cfg: cfg, accept: make(chan net.Conn, 256), dead: make(chan struct{}, 1)}
 	err = ln.Start()
 	if err != nil {
@@ -390,5 +390,6 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, local:%s", l.id, l.LocalAddr().String())
+	return fmt.Sprintf("listener, id:%d, batchs:%d, local:%s://%s",
+		l.id, l.batchs, l.LocalAddr().Network(), l.LocalAddr().String())
 }
