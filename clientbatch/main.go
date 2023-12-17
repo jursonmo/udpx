@@ -25,6 +25,7 @@ func server() {
 	l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithListenerNum(2))
 	//l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithReuseport(true))
 	if err != nil {
+		log.Printf("err:%+v", err) //打印err堆栈
 		panic(err)
 	}
 	//time.Sleep(time.Second * 2) //让客户端先发出数据
