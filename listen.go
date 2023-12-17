@@ -47,7 +47,7 @@ type ListenConfig struct {
 	network string
 	addr    string
 	//raddr     string
-	reuseport     bool
+	reuseport     bool //如果没有指定listenerNum，且reuseport =true,那么就GOPROCESS来作为listenerNum
 	listenerNum   int
 	batchs        int //one
 	maxPacketSize int

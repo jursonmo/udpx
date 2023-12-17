@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	log.Printf("runtime.GOMAXPROCS(0):%d\n", runtime.GOMAXPROCS(0)) // udpx.WithListenerNum(2)
+	log.Printf("runtime.GOMAXPROCS(0):%d\n", runtime.GOMAXPROCS(0))
 	go server()
 	time.Sleep(time.Second)
 
@@ -20,7 +20,9 @@ func main() {
 }
 
 func server() {
-	l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithReuseport(true), udpx.WithListenerNum(2))
+	//以 udpx.WithListenerNum(2)为准，或者配置udpx.WithReuseport(true)，让系统根据GOMAXPROCS来决定
+	l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithListenerNum(2))
+	//l, err := udpx.NewUdpListen(context.Background(), "udp", "0.0.0.0:3333", udpx.WithReuseport(true))
 	if err != nil {
 		panic(err)
 	}
