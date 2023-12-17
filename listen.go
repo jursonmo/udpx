@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
 )
@@ -90,7 +91,7 @@ func (ln *UdpListen) Start() error {
 	cfg := ln.cfg
 	laddr, err := net.ResolveUDPAddr(cfg.network, cfg.addr)
 	if err != nil {
-		return err
+		return pkgerr.Wrapf(err, "ResolveUDPAddr %s://%s fail", cfg.network, cfg.addr)
 	}
 	ln.laddr = laddr
 	ln.listeners = make([]*Listener, cfg.listenerNum)
@@ -98,8 +99,7 @@ func (ln *UdpListen) Start() error {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
 			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize))
 		if err != nil {
-			log.Println(err)
-			continue
+			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
 		ln.listeners[i] = l
 
@@ -143,6 +143,7 @@ func (ln *UdpListen) Listen() {
 			for {
 				conn, err := l.Accept()
 				if err != nil {
+					log.Printf("%v Accept() err:%s and quit", l, err)
 					return
 				}
 				ln.accept <- conn
@@ -254,7 +255,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	//conn, err := net.ListenUDP("udp", udpAddress)
 	conn, err := lc.ListenPacket(ctx, network, addr)
 	if err != nil {
-		return nil, err
+		return nil, pkgerr.WithStack(err)
 	}
 	l.lconn = conn.(*net.UDPConn)
 	l.pc = ipv4.NewPacketConn(conn)
