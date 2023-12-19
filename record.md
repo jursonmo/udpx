@@ -8,3 +8,4 @@
 8. 2022-11-26,实现：client dial 生成的UDPConn 默认也是批量写，即后台默认起一个goroutine 负责批量写，业务层只需调用Write(). 如果udp.WithWriteBatchs(0)，就表示不想后台起一个goroutine 负责批量写，由业务层自己调用bufioWrite 里控制批量写。
 9. client dial 生成的UDPConn，通过udp.WithReadBatchs(0)来控制是否在后台起一个goroutine 来批量读，而不是udp.WithRxHandler(nil)来控制
 10. client 用readBatchLoopv2 来代替 readBatchLoop，这样可以复用内存对象，减少一次内存copy, 跟 listener readBatchLoopv2 一样
+11. todo: udpx只负责高性能收发报文，不涉及到控制数据，也不涉及协议格式设置，心跳应该由上层协议来处理。tcp 可以有keepalive的配置，因为tcp 协议就是具备发送控制数据的能力，tcp 协议头部就有20个字节，但是udp只有8个字节，无法发送控制数据，所以心跳应该由上层协议来实现，但是udpx listener 也需要检查它ACCEPT的UDPConn socket 是否死掉，比如上层协议处理异常，永远不关闭udp conn，那么udpx listener就会积累很多UDPConn对象，所以udpx listener要定期查看它产生的UDPConn对象是否超过很长时间没有流量了，比如一个小时等，超过就关闭并删除UDPConn对象。
