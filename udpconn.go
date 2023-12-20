@@ -303,6 +303,8 @@ func (c *UDPConn) String() string {
 	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v,rwbatch(%d,%d)", c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs)
 }
 
+// 重新对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
+// 不然提示json: error calling MarshalJSON for type *udpx.UDPConn: invalid character '.' after object key:value pair
 func (c *UDPConn) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"isClient": %v,"raddr": "%s"}`, c.client, c.raddr.String())), nil
 }
