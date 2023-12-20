@@ -30,7 +30,7 @@ func (l *Listener) readBatchLoopv2() {
 			panic(err)
 		}
 		if l.mode == DebugMode {
-			log.Printf("readBatchLoopv2 listener id:%d, batch got n:%d, len(ms):%d\n", l.id, n, len(rms))
+			log.Printf("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))
 		}
 		if n == 0 {
 			continue
