@@ -17,7 +17,7 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 	b := GetMyBuffer(len(data))
 	if b == nil {
 		//data too bigger?
-		return 0, ErrTooBig
+		return 0, pkgerr.WithMessagef(ErrTooBig, "GetMyBuffer fail for data len:%d", len(data))
 	}
 	n, err = b.Write(data)
 	if err != nil {
