@@ -2,12 +2,14 @@ package udpx
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	pkgerr "github.com/pkg/errors"
@@ -218,6 +220,7 @@ type Listener struct {
 	mode  int
 	//ln      net.Listener
 	clients        sync.Map
+	clientCount    int64
 	accept         chan *UDPConn
 	txqueue        chan MyBuffer
 	writeBatchAble bool // write batch is enable?
@@ -355,6 +358,7 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
 		log.Printf("%v, new conn:%v", l, addr)
 		l.clients.Store(key, uc)
+		atomic.AddInt64(&l.clientCount, 1)
 		l.accept <- uc
 	} else {
 		uc = v.(*UDPConn)
@@ -362,9 +366,16 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 	return uc
 }
 
-func (l *Listener) deleteConn(key AddrKey /*interface{}*/) {
+func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {
 	log.Printf("id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
-	l.clients.Delete(key)
+	_, exist := l.clients.LoadAndDelete(key)
+	if !exist {
+		//暂时用panic 来确保业务层对同一个conn 删除两次时，我可以看出来
+		log.Panicf("%v try to delete conn key: %v, but key isn't exist", l, key)
+		return fmt.Errorf("%v try to delete conn key: %v, but key isn't exist", l, key)
+	}
+	atomic.AddInt64(&l.clientCount, -1)
+	return nil
 }
 
 func (l *Listener) LocalAddr() net.Addr {
@@ -411,4 +422,47 @@ func (l *Listener) Close() error {
 func (l *Listener) String() string {
 	return fmt.Sprintf("listener, id:%d, batchs:%d, local:%s://%s",
 		l.id, l.batchs, l.LocalAddr().Network(), l.LocalAddr().String())
+}
+
+func (l *Listener) ListClientConns() []*UDPConn {
+	list := make([]*UDPConn, 0, atomic.LoadInt64(&l.clientCount))
+	l.clients.Range(func(key, value any) bool {
+		uc := value.(*UDPConn)
+		list = append(list, uc)
+		log.Println("---------l.clients.Range---------")
+		return true
+	})
+	return list
+}
+
+type ListenerInfo struct {
+	ListenerId  int
+	ClientCount int64
+	Clients     []*UDPConn
+}
+
+func (l *Listener) Detail() []byte {
+	detail := ListenerInfo{ListenerId: l.id, Clients: l.ListClientConns()}
+	d, _ := json.Marshal(&detail)
+	return d
+}
+
+func (ln *UdpListen) Detail() []byte {
+	details := make([]ListenerInfo, 0, len(ln.listeners))
+	for _, l := range ln.listeners {
+		details = append(details, ListenerInfo{
+			ListenerId:  l.id,
+			ClientCount: atomic.LoadInt64(&l.clientCount),
+			Clients:     l.ListClientConns()})
+	}
+
+	ld, err := json.MarshalIndent(details, "", "\t")
+	if err != nil {
+		ld = []byte(err.Error())
+	}
+	info := make([]byte, 0, len(ld)+256)
+	x := []byte(fmt.Sprintf("%v\n", ln))
+	info = append(info, x...)
+	info = append(info, ld...)
+	return info
 }

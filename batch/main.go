@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"runtime"
@@ -31,9 +32,12 @@ func server() {
 		panic(err)
 	}
 	//time.Sleep(time.Second * 2) //让客户端先发出数据
+	go func() {
+		time.Sleep(time.Second * 2)
+		ShowLnDetail(l)
+	}()
 
 	log.Printf("start accepting .....")
-
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -41,6 +45,11 @@ func server() {
 		}
 		go handle(conn)
 	}
+
+}
+
+func ShowLnDetail(ul *udpx.UdpListen) {
+	fmt.Printf("LnDetail:%s\n", string(ul.Detail()))
 }
 
 func handle(conn net.Conn) {

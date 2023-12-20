@@ -2,6 +2,7 @@ package udpx
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -296,4 +297,12 @@ func (c *UDPConn) PutTxQueue(b MyBuffer) error {
 		return ErrTxQueueFull
 	}
 	return nil
+}
+
+func (c *UDPConn) String() string {
+	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v,rwbatch(%d,%d)", c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs)
+}
+
+func (c *UDPConn) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`{"isClient": %v,"raddr": "%s"}`, c.client, c.raddr.String())), nil
 }
