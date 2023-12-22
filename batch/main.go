@@ -58,7 +58,8 @@ func handle(conn net.Conn) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			panic(err)
+			log.Printf("read err:%v\n", err)
+			return
 		}
 		log.Printf("server, i:%d, recv data:%s, and write back", i, string(buf[:n]))
 		i++
@@ -67,7 +68,8 @@ func handle(conn net.Conn) {
 			if e, ok := err.(net.Error); ok && e.Temporary() {
 				continue
 			}
-			panic(err)
+			log.Printf("write err:%v\n", err)
+			return
 		}
 		if n != wn {
 			log.Panicf("n:%d, wn:%d", n, wn)

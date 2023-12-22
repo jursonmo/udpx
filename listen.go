@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
@@ -147,6 +148,7 @@ func (cfg *ListenConfig) Tidy() error {
 }
 
 func (ln *UdpListen) Listen() {
+	go ln.checkExpire()
 	for _, l := range ln.listeners {
 		if l == nil {
 			continue
@@ -220,6 +222,7 @@ type Listener struct {
 	mode  int
 	//ln      net.Listener
 	clients        sync.Map
+	expire         time.Duration //client expire ,根据clients的数量
 	clientCount    int64
 	accept         chan *UDPConn
 	txqueue        chan MyBuffer
@@ -429,7 +432,6 @@ func (l *Listener) ListClientConns() []*UDPConn {
 	l.clients.Range(func(key, value any) bool {
 		uc := value.(*UDPConn)
 		list = append(list, uc)
-		log.Println("---------l.clients.Range---------")
 		return true
 	})
 	return list
@@ -465,4 +467,57 @@ func (ln *UdpListen) Detail() []byte {
 	info = append(info, x...)
 	info = append(info, ld...)
 	return info
+}
+
+// 虽然UDPConn是否超时，应该由上层协议来检测，
+// 但是我们这里也可以做个兜底,避免上层协议出错，忘记关闭UDPConn,导致udpx残存死UDPConn过多
+func (ln *UdpListen) checkExpire() error {
+	intv := time.Minute * 3
+	t := time.NewTicker(intv)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ln.dead:
+			return nil
+		case <-ln.ctx.Done():
+			return ln.ctx.Err()
+		case <-t.C:
+			log.Printf("---checkExpire---\n")
+			for _, l := range ln.listeners {
+				ccs := l.ListClientConns()
+				l.updateClientExpire(len(ccs))
+				for _, c := range ccs {
+					if c.check.lastRxPkts != c.rxPackets || c.check.lastAliveAt.IsZero() {
+						c.check.lastRxPkts = c.rxPackets
+						c.check.timeoutCount = 0 //reset
+						c.check.lastAliveAt = time.Now()
+						continue
+					}
+					//没有收到任何数据?
+					c.check.timeoutCount += 1
+					inactiveElapse := time.Since(c.check.lastAliveAt)
+					if inactiveElapse > l.expire {
+						log.Printf("conn:%v, inactiveElapse:%v,l.expire:%v\n", c, inactiveElapse, l.expire)
+						c.Close()
+					}
+				}
+			}
+
+		}
+
+	}
+}
+
+// 一般业务层都要有心跳，而且心跳不应该超过5分钟的
+func (l *Listener) updateClientExpire(n int) {
+	switch {
+	case n > 1000:
+		log.Printf("%v client socket num:%d over 1000\n", l, n)
+		l.expire = time.Minute * 5
+	case n > 500:
+		l.expire = time.Minute * 10
+	default:
+		l.expire = time.Minute * 20
+	}
 }

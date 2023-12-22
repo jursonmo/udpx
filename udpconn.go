@@ -38,7 +38,9 @@ type UDPConn struct {
 	rxqueueB    chan []byte
 	rxhandler   func([]byte)
 	rxqueuelen  int
-	rxDrop      int64
+	rxPackets   int64
+	rxDropPkts  int64
+	rxDropBytes int64
 	readBatchs  int //表示是否需要单独为此conn 后台起goroutine来批量读
 	writeBatchs int //表示是否需要单独为此conn 后台起goroutine来批量写
 	maxBufSize  int
@@ -49,6 +51,15 @@ type UDPConn struct {
 	err    error
 	closed bool
 	dead   chan struct{}
+
+	//检查是否长期没有收到数据, 死socket,避免上层协议忘记关闭socket 导致大量死socket残存
+	//linux 内核对tcp 有keepalive 保证
+	check checkTimeout
+}
+type checkTimeout struct {
+	lastRxPkts   int64
+	lastAliveAt  time.Time
+	timeoutCount int
 }
 
 type UDPConnOpt func(*UDPConn)

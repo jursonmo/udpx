@@ -115,8 +115,10 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) {
 	//非阻塞模式,避免某个UDPConn 的数据没有被处理而阻塞了listener 或者 UDPConn 继续接受数据
 	select {
 	case c.rxqueue <- b:
+		c.rxPackets += 1
 	default:
-		c.rxDrop += int64(len(b.Bytes()))
+		c.rxDropPkts += 1
+		//c.rxDropBytes += int64(len(b.Bytes()))
 		Release(b)
 	}
 }
