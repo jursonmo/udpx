@@ -429,7 +429,7 @@ func (l *Listener) Close() error {
 	// if l.txqueue != nil {
 	// 	close(l.txqueue)
 	// }
-	//return l.lconn.Close()
+
 	return nil
 }
 
