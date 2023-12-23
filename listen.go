@@ -416,10 +416,20 @@ func (l *Listener) Close() error {
 	defer log.Printf("%v over", l)
 	close(l.dead)
 	close(l.accept)
+	err := l.lconn.Close()
+	if err != nil {
+		return err
+	}
+	//todo:
+	//先关闭lconn,再考虑是否要关闭txqueue, 因为UDPConn发送数据先是发给ln的txqueue,再由ln的侦听socket批量发送出去
+	//如果这里close(l.txqueue)，然后UDPConn还发送数据ln的txqueue，就会panic
+	//即使先关闭lconn也无法保证没有UDPConn发送数据, 所以这里close l.txqueue是有风险的
+	//但是不关闭l.txqueue，无法让WriteBatchLoop 退出
 	if l.txqueue != nil {
 		close(l.txqueue)
 	}
-	return l.lconn.Close()
+	//return l.lconn.Close()
+	return nil
 }
 
 func (l *Listener) String() string {
