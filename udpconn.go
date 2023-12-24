@@ -134,6 +134,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 		uc.client = true
 		if uc.readBatchs > 0 {
 			//go uc.ReadBatchLoop(uc.rxhandler)
+			InitPool(uc.maxBufSize)
 			go uc.readBatchLoopv2()
 		}
 		if uc.writeBatchs > 0 {

@@ -77,7 +77,7 @@ func (c *UDPConn) handlePacket(msg []byte) {
 // 相比ReadBatchLoop->handlePacket, 复用了对象，少一次copy
 func (c *UDPConn) readBatchLoopv2() {
 	var err error
-	InitPool(c.maxBufSize)
+	//InitPool(c.maxBufSize) //fixed bug:在readBatchLoopv2之前就应该初始化Pool,避免UDPConn发生数据时去pool获取内存对象panic
 	rms := make([]ipv4.Message, c.readBatchs)
 	buffers := make([]MyBuffer, c.readBatchs)
 	n := len(rms)
