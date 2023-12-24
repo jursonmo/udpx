@@ -425,6 +425,7 @@ func (l *Listener) Close() error {
 	//如果这里close(l.txqueue)，然后UDPConn还发送数据ln的txqueue，就会panic
 	//即使先关闭lconn也无法保证没有UDPConn发送数据, 所以这里close l.txqueue是有风险的
 	//原来的本意是通过关闭l.txqueue，让WriteBatchLoop 退出，但是现在lconn.Close()后，WriteBatchLoop发送数据出错也会退出
+	//每个UDPConn都会发生心跳，所以保证 listener的 WriteBatchLoop发送数据出错也会退出
 	//所以这里可以不用关闭l.txqueue
 	// if l.txqueue != nil {
 	// 	close(l.txqueue)
