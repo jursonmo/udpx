@@ -2,6 +2,7 @@ package udpx
 
 import (
 	"errors"
+	"fmt"
 	"log"
 
 	pkgerr "github.com/pkg/errors"
@@ -21,8 +22,9 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 	}
 	n, err = b.Write(data)
 	if err != nil {
-		panic(err)
-		//return
+		//panic(err)
+		err = fmt.Errorf("put data in buffer fail, err:%w", err)
+		return
 	}
 
 	if c.ln != nil {
