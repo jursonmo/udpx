@@ -4,19 +4,20 @@ import (
 	"log"
 	"net"
 
+	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
 )
 
 // readBatchLoop ->handlePacket:分配新的内存对象,并且copy 一次
 // 为了复用对象,同时减少一次内存copy, 实现 Listener readBatchLoopv2 -> handleBuffer
-func (l *Listener) readBatchLoopv2() {
+func (l *Listener) readBatchLoopv2() error {
 	var err error
 	InitPool(l.maxPacketSize)
 	rms := make([]ipv4.Message, l.batchs)
 	buffers := make([]MyBuffer, l.batchs)
 	n := len(rms)
 	log.Printf("%v, started with readLoopv2(use MyBuffer)....\n", l)
-	defer log.Printf("%v, readLoopv2(use MyBuffer) quit\n", l)
+	defer func() { log.Printf("%v, readLoopv2(use MyBuffer) quit, err:%v\n", l, err) }()
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)
@@ -27,7 +28,7 @@ func (l *Listener) readBatchLoopv2() {
 		if err != nil {
 			log.Printf("%v, ReadBatch err:%v\n", l, err)
 			l.Close()
-			panic(err)
+			return pkgerr.WithMessagef(err, "listener:%v, ReadBatch err", l.lconn.LocalAddr())
 		}
 		if l.mode == DebugMode {
 			log.Printf("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))

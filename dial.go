@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 
+	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
 )
 
@@ -75,7 +76,7 @@ func (c *UDPConn) handlePacket(msg []byte) {
 }
 
 // 相比ReadBatchLoop->handlePacket, 复用了对象，少一次copy
-func (c *UDPConn) readBatchLoopv2() {
+func (c *UDPConn) readBatchLoopv2() error {
 	var err error
 	//InitPool(c.maxBufSize) //fixed bug:在readBatchLoopv2之前就应该初始化Pool,避免UDPConn发送数据时去pool获取内存对象panic
 	rms := make([]ipv4.Message, c.readBatchs)
@@ -83,6 +84,7 @@ func (c *UDPConn) readBatchLoopv2() {
 	n := len(rms)
 	log.Printf("client:%v->%v,read batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....",
 		c.LocalAddr(), c.RemoteAddr(), c.readBatchs, c.maxBufSize)
+	defer func() { log.Printf("%v readBatchLoopv2 quit, err:%v", c, err) }()
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0) //复用对象
@@ -92,7 +94,7 @@ func (c *UDPConn) readBatchLoopv2() {
 		n, err = c.pc.ReadBatch(rms, 0)
 		if err != nil {
 			c.Close()
-			panic(err)
+			return pkgerr.WithMessagef(err, "UDPConn:%v, ReadBatch err", c)
 		}
 		if gMode == DebugMode {
 			log.Printf("readBatchLoopv2 client:%v->%v, batch got n:%d, max len(ms):%d\n", c.LocalAddr(), c.RemoteAddr(), n, len(rms))
