@@ -3,3 +3,5 @@
 2. read/write batchs(readmmsg, writemmsg): 减少系统调用
 3. buffer复用：尽量减少copy
 
+udpx 的服务器运行linux, 可以服务所有的udp 客户端， 如果客户端想要用udpx 的批量收发数据，只能在linux 平台使用。
+
