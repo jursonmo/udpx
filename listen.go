@@ -58,6 +58,12 @@ func MaxPacketSize(n int) LnCfgOptions {
 	}
 }
 
+func CfgLogger(l Logger) LnCfgOptions {
+	return func(lc *ListenConfig) {
+		lc.logger = l
+	}
+}
+
 type ListenConfig struct {
 	network string
 	addr    string
@@ -66,11 +72,14 @@ type ListenConfig struct {
 	listenerNum   int
 	batchs        int //one
 	maxPacketSize int
+
+	logger Logger
 }
 
 type UdpListen struct {
 	sync.Mutex
 	ctx       context.Context
+	logger    Logger
 	listeners []*Listener
 	laddr     *net.UDPAddr
 	accept    chan net.Conn
@@ -84,7 +93,7 @@ func (l *UdpListen) String() string {
 }
 
 func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOptions) (*UdpListen, error) {
-	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs}
+	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -92,8 +101,16 @@ func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOption
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("ListenConfig:%+v\n", cfg)
-	ln := &UdpListen{ctx: ctx, cfg: cfg, accept: make(chan net.Conn, 256), dead: make(chan struct{}, 1)}
+	cfg.logger.Infof("ListenConfig:%+v\n", cfg)
+	ln := &UdpListen{
+		ctx:    ctx,
+		cfg:    cfg,
+		accept: make(chan net.Conn, 256),
+		dead:   make(chan struct{}, 1),
+		logger: cfg.logger,
+		//[UdpListen]2024/01/04 18:02:13 INFO: listener, id:1, batchs:8, local:udp://[::]:3333 listenning....
+		//logger: StdLogger{Logger: log.New(log.Writer(), "[UdpListen]", log.Flags())},
+	}
 	err = ln.Start()
 	if err != nil {
 		return nil, err
@@ -111,7 +128,7 @@ func (ln *UdpListen) Start() error {
 	ln.listeners = make([]*Listener, cfg.listenerNum)
 	for i := 0; i < cfg.listenerNum; i++ {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
-			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize))
+			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize), WithLogger(ln.logger))
 		if err != nil {
 			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
@@ -154,11 +171,11 @@ func (ln *UdpListen) Listen() {
 			continue
 		}
 		go func(l *Listener) {
-			log.Printf("%v listenning....", l)
+			ln.logger.Infof("%v listenning....", l)
 			for {
 				conn, err := l.Accept()
 				if err != nil {
-					log.Printf("%v Accept() err:%s and quit", l, err)
+					ln.logger.Errorf("%v Accept() err:%s and quit", l, err)
 					return
 				}
 				ln.accept <- conn
@@ -216,10 +233,11 @@ func (l *UdpListen) Close() error {
 
 type Listener struct {
 	sync.Mutex
-	id    int
-	lconn *net.UDPConn
-	pc    *ipv4.PacketConn
-	mode  int
+	id     int
+	logger Logger
+	lconn  *net.UDPConn
+	pc     *ipv4.PacketConn
+	mode   int
 	//ln      net.Listener
 	clients        sync.Map
 	expire         time.Duration //client expire ,根据clients的数量
@@ -255,6 +273,12 @@ func WithLnMaxPacketSize(n int) ListenerOpt {
 func WithMode(m int) ListenerOpt {
 	return func(l *Listener) {
 		l.mode = m
+	}
+}
+
+func WithLogger(log Logger) ListenerOpt {
+	return func(l *Listener) {
+		l.logger = log
 	}
 }
 
@@ -304,15 +328,16 @@ func (l *Listener) readBatchLoop() {
 	for i := 0; i < len(rms); i++ {
 		rms[i] = ipv4.Message{Buffers: [][]byte{make([]byte, maxPacketSize)}}
 	}
-	log.Printf("listener, id:%d, batchs:%d, maxPacketSize:%d, readLoop....", l.id, l.batchs, l.maxPacketSize)
+	l.logger.Infof("listener, id:%d, batchs:%d, maxPacketSize:%d, readLoop....", l.id, l.batchs, l.maxPacketSize)
 	for {
 		n, err := l.pc.ReadBatch(rms, 0)
 		if err != nil {
 			l.Close()
 			panic(err)
 		}
-		log.Printf("listener id:%d, batch got n:%d, len(ms):%d\n", l.id, n, len(rms))
-
+		if l.mode == DebugMode {
+			l.logger.Infof("listener id:%d, batch got n:%d, len(ms):%d\n", l.id, n, len(rms))
+		}
 		if n == 0 {
 			continue
 		}
@@ -359,7 +384,7 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 	if !ok {
 		//new udpConn
 		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
-		log.Printf("%v, new conn:%v", l, addr)
+		l.logger.Infof("%v, new conn:%v", l, addr)
 		l.clients.Store(key, uc)
 		atomic.AddInt64(&l.clientCount, 1)
 		l.accept <- uc
@@ -370,7 +395,7 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 }
 
 func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {
-	log.Printf("id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
+	l.logger.Errorf("id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
 	_, exist := l.clients.LoadAndDelete(key)
 	if !exist {
 		//暂时用panic 来确保业务层对同一个conn 删除两次时，我可以看出来
@@ -412,8 +437,8 @@ func (l *Listener) Close() error {
 	l.closed = true
 	l.Unlock()
 
-	log.Printf("%v closing....", l)
-	defer log.Printf("%v over", l)
+	l.logger.Errorf("%v closing....", l)
+	defer l.logger.Errorf("%v over", l)
 	close(l.dead)
 	close(l.accept)
 	err := l.lconn.Close()
@@ -495,7 +520,7 @@ func (ln *UdpListen) checkExpire() error {
 		case <-ln.ctx.Done():
 			return ln.ctx.Err()
 		case <-t.C:
-			log.Printf("---checkExpire---\n")
+			ln.logger.Infof("---checkExpire---\n")
 			for _, l := range ln.listeners {
 				ccs := l.ListClientConns()
 				l.updateClientExpire(len(ccs))
@@ -510,7 +535,7 @@ func (ln *UdpListen) checkExpire() error {
 					c.check.timeoutCount += 1
 					inactiveElapse := time.Since(c.check.lastAliveAt)
 					if inactiveElapse > l.expire {
-						log.Printf("conn:%v, inactiveElapse:%v,l.expire:%v\n", c, inactiveElapse, l.expire)
+						l.logger.Errorf("conn:%v, inactiveElapse:%v, l.expire:%v\n", c, inactiveElapse, l.expire)
 						c.Close()
 					}
 				}
@@ -525,8 +550,9 @@ func (ln *UdpListen) checkExpire() error {
 func (l *Listener) updateClientExpire(n int) {
 	switch {
 	case n > 1000:
-		log.Printf("%v client socket num:%d over 1000\n", l, n)
-		l.expire = time.Minute * 5
+		exipre := time.Minute * 5
+		l.logger.Warnf("%v client socket num:%d over 1000, change expire to %v\n", l, n, exipre)
+		l.expire = exipre
 	case n > 500:
 		l.expire = time.Minute * 10
 	default:

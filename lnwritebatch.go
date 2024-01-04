@@ -58,8 +58,8 @@ func (l *Listener) writeBatchLoop() (err error) {
 	bw, _ := NewPCBioWriter(l.pc, l.batchs)
 	l.writeBatchAble = true
 	defer func() { l.writeBatchAble = false }()
-	log.Printf("%v, writeBatchLoop started", l)
-	defer func() { log.Printf("%v, writeBatchLoop quit, err:%+v", l, err) }()
+	l.logger.Infof("%v, writeBatchLoop started", l)
+	defer func() { l.logger.Errorf("%v, writeBatchLoop quit, err:%+v", l, err) }()
 
 	err = bw.WriteBatchLoop(l.txqueue)
 	return

@@ -1,7 +1,6 @@
 package udpx
 
 import (
-	"log"
 	"net"
 
 	pkgerr "github.com/pkg/errors"
@@ -16,8 +15,8 @@ func (l *Listener) readBatchLoopv2() error {
 	rms := make([]ipv4.Message, l.batchs)
 	buffers := make([]MyBuffer, l.batchs)
 	n := len(rms)
-	log.Printf("%v, started with readLoopv2(use MyBuffer)....\n", l)
-	defer func() { log.Printf("%v, readLoopv2(use MyBuffer) quit, err:%v\n", l, err) }()
+	l.logger.Infof("%v, started with readLoopv2(use MyBuffer)....\n", l)
+	defer func() { l.logger.Errorf("%v, readLoopv2(use MyBuffer) quit, err:%v\n", l, err) }()
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)
@@ -26,12 +25,12 @@ func (l *Listener) readBatchLoopv2() error {
 		}
 		n, err = l.pc.ReadBatch(rms, 0)
 		if err != nil {
-			log.Printf("%v, ReadBatch err:%v\n", l, err)
+			l.logger.Errorf("%v, ReadBatch err:%v\n", l, err)
 			l.Close()
 			return pkgerr.WithMessagef(err, "listener:%v, ReadBatch err", l.lconn.LocalAddr())
 		}
 		if l.mode == DebugMode {
-			log.Printf("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))
+			l.logger.Infof("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))
 		}
 		if n == 0 {
 			continue
