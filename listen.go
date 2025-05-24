@@ -409,12 +409,13 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		l.accept <- uc
 		return uc, true
 	}
+	uc = v.(*UDPConn)
 
 	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
+	//这样导致的后果就是业务层不能发送跟 magic 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
 	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic[:]) {
-		return
+		return uc, true
 	}
-	uc = v.(*UDPConn)
 	return uc, false
 }
 
