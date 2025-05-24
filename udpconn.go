@@ -162,7 +162,7 @@ func (c *UDPConn) IsClosed() bool {
 
 func (c *UDPConn) Close() error {
 	c.mux.Lock()
-	if c.closed == true {
+	if c.closed {
 		c.mux.Unlock()
 		return nil
 	}
@@ -179,8 +179,10 @@ func (c *UDPConn) Close() error {
 	}
 
 	close(c.dead)
-	if c.txqueue != nil {
-		close(c.txqueue)
+	if q := c.txqueue; q != nil {
+		//close(c.txqueue)// 直接关闭，PutTxQueue() 写入一个closed channel 从而panic
+		c.txqueue = nil //置空, 再关闭原来channel, 避免 PutTxQueue()时panic
+		close(q)
 	}
 
 	if c.ln != nil {
@@ -302,6 +304,9 @@ func (c *UDPConn) writeBatchLoop() {
 
 // 返回的error 应该实现net.Error temporary(), 这样上层Write可以认为Eagain,再次调用Write
 func (c *UDPConn) PutTxQueue(b MyBuffer) error {
+	if c.closed {
+		return ErrConnClosed
+	}
 	select {
 	case c.txqueue <- b:
 	default:
