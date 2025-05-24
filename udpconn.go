@@ -2,7 +2,6 @@ package udpx
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +18,8 @@ var ErrConnClosed = errors.New("Conn Closed")
 const (
 	magicSize = 4
 )
+
+var fixedMagic [magicSize]byte = [magicSize]byte{0x01, 0x02, 0x03, 0x04}
 
 type UDPConn struct {
 	mux    sync.Mutex
@@ -141,11 +142,12 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 		//client dial
 		uc.client = true
 		//init magic
-		_, err := rand.Read(uc.magic[:])
-		if err != nil {
-			return nil
-		}
-		log.Printf("magic:%v\n", uc.magic)
+		// _, err := rand.Read(uc.magic[:])
+		// if err != nil {
+		// 	return nil
+		// }
+		// log.Printf("magic:%v\n", uc.magic)
+		uc.magic = fixedMagic
 	}
 	return uc
 }

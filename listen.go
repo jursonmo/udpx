@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -375,7 +376,7 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 	}
 }
 
-func (l *Listener) getUDPConn(addr net.Addr, magicData []byte) (uc *UDPConn, isCtrlData bool) {
+func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlData bool) {
 	// go tool pprof -alloc_objects http://192.168.64.5:6061/debug/pprof/heap
 	//raddr := addr.String() //net.UDPConn.String() 方法会产生很多小对象, 不如把addr 转化一下
 	udpaddr := addr.(*net.UDPAddr)
@@ -383,18 +384,24 @@ func (l *Listener) getUDPConn(addr net.Addr, magicData []byte) (uc *UDPConn, isC
 	if !ok {
 		return
 	}
+
 	v, ok := l.clients.Load(key)
 	if !ok {
 		//new client? check magic
-		if len(magicData) != magicSize {
+		if len(data) != magicSize {
 			return nil, true
 		}
 		//new udpConn
 		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
-		if _, err := uc.lconn.Write(magicData); err != nil {
+		uc.magic[0] = data[0]
+		uc.magic[1] = data[1]
+		uc.magic[2] = data[2]
+		uc.magic[3] = data[3]
+
+		if _, err := uc.lconn.Write(data); err != nil {
 			return nil, true
 		}
-		l.logger.Infof("%v, new conn:%v", l, addr)
+		l.logger.Infof("%v, new conn:%v, magic:%v", l, addr, uc.magic)
 		l.clients.Store(key, uc)
 		atomic.AddInt64(&l.clientCount, 1)
 		//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
@@ -402,6 +409,10 @@ func (l *Listener) getUDPConn(addr net.Addr, magicData []byte) (uc *UDPConn, isC
 		return uc, true
 	}
 
+	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
+	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic) {
+		return
+	}
 	uc = v.(*UDPConn)
 	return uc, false
 }
