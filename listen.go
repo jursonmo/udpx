@@ -398,7 +398,8 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		uc.magic[2] = data[2]
 		uc.magic[3] = data[3]
 
-		if _, err := uc.lconn.Write(data); err != nil {
+		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
+			l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
 			return nil, true
 		}
 		l.logger.Infof("%v, new conn:%v, magic:%v", l, addr, uc.magic)
@@ -410,7 +411,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 	}
 
 	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
-	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic) {
+	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic[:]) {
 		return
 	}
 	uc = v.(*UDPConn)
