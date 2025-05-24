@@ -123,8 +123,8 @@ func WithOneshotRead(b bool) UDPConnOpt {
 
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
 	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1),
-		rxqueuelen:  256,
-		txqueuelen:  256,
+		rxqueuelen:  512,
+		txqueuelen:  512,
 		readBatchs:  defaultBatchs,
 		writeBatchs: defaultBatchs,
 		maxBufSize:  defaultMaxPacketSize,
@@ -273,10 +273,16 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	//1.客户端读模式, 启用了batch读(说明后台有任务负责批量读), 这里只需从队列里读
 	//2.服务端模式, 不管是否批量读，都是由listen socket去完成读，UDPConn只需从队列里读
 	select {
-	case b := <-c.rxqueueB: //[]byte rxqueue
+	case b, ok := <-c.rxqueueB: //[]byte rxqueue
+		if !ok {
+			return 0, ErrConnClosed
+		}
 		n = copy(buf, b)
 		return
-	case b := <-c.rxqueue: //MyBuffer rxqueue
+	case b, ok := <-c.rxqueue: //MyBuffer rxqueue
+		if !ok {
+			return 0, ErrConnClosed
+		}
 		//这里有两种处理，1: 要求一次性读完MyBuffer 的内容，一次未读完就报错。2. 可以不要求一次性读完，没有读完的下次再读
 		if c.oneshotRead {
 			n, err = b.Read(buf)
