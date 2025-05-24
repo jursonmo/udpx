@@ -82,7 +82,7 @@ type UdpListen struct {
 	logger    Logger
 	listeners []*Listener
 	laddr     *net.UDPAddr
-	accept    chan net.Conn
+	accept    chan net.Conn // 收集所有listeners accept 到的连接, 上层可以通过Accept()来获取, 这个队列可以使得大一点，避免阻塞
 	dead      chan struct{}
 	closed    bool
 	cfg       ListenConfig
@@ -105,7 +105,7 @@ func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOption
 	ln := &UdpListen{
 		ctx:    ctx,
 		cfg:    cfg,
-		accept: make(chan net.Conn, 256),
+		accept: make(chan net.Conn, 1024),
 		dead:   make(chan struct{}, 1),
 		logger: cfg.logger,
 		//[UdpListen]2024/01/04 18:02:13 INFO: listener, id:1, batchs:8, local:udp://[::]:3333 listenning....
@@ -287,7 +287,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	for _, opt := range opts {
 		opt(l)
 	}
-	l.accept = make(chan *UDPConn, 128)
+	l.accept = make(chan *UDPConn, 512)
 
 	var lc = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -365,14 +365,17 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 		return
 	}
 
-	uc = l.getUDPConn(addr)
-
+	uc, isCtrlData := l.getUDPConn(addr, data)
+	if isCtrlData {
+		//data 是初始化用的控制数据，不需要处理
+		return
+	}
 	if uc.rxhandler != nil {
 		uc.rxhandler(data)
 	}
 }
 
-func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
+func (l *Listener) getUDPConn(addr net.Addr, magicData []byte) (uc *UDPConn, isCtrlData bool) {
 	// go tool pprof -alloc_objects http://192.168.64.5:6061/debug/pprof/heap
 	//raddr := addr.String() //net.UDPConn.String() 方法会产生很多小对象, 不如把addr 转化一下
 	udpaddr := addr.(*net.UDPAddr)
@@ -382,16 +385,25 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 	}
 	v, ok := l.clients.Load(key)
 	if !ok {
+		//new client? check magic
+		if len(magicData) != magicSize {
+			return nil, true
+		}
 		//new udpConn
 		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
+		if _, err := uc.lconn.Write(magicData); err != nil {
+			return nil, true
+		}
 		l.logger.Infof("%v, new conn:%v", l, addr)
 		l.clients.Store(key, uc)
 		atomic.AddInt64(&l.clientCount, 1)
+		//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
 		l.accept <- uc
-	} else {
-		uc = v.(*UDPConn)
+		return uc, true
 	}
-	return uc
+
+	uc = v.(*UDPConn)
+	return uc, false
 }
 
 func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {

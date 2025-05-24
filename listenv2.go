@@ -43,7 +43,8 @@ func (l *Listener) readBatchLoopv2() error {
 }
 
 func (l *Listener) handleBuffer(addr net.Addr, b MyBuffer) {
-	if uc := l.getUDPConn(addr); uc != nil {
+	//TODO:
+	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
 		uc.PutRxQueue2(b)
 	}
 }

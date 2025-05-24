@@ -1,10 +1,13 @@
 package udpx
 
 import (
+	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
@@ -13,10 +16,15 @@ import (
 
 var ErrConnClosed = errors.New("Conn Closed")
 
+const (
+	magicSize = 4
+)
+
 type UDPConn struct {
 	mux    sync.Mutex
 	ln     *Listener
 	client bool //true表示lconn is conneted(绑定了目的地址), 即可以直接用Write，不需要WriteTo
+	magic  [magicSize]byte
 	lconn  *net.UDPConn
 	pc     *ipv4.PacketConn
 	raddr  *net.UDPAddr
@@ -132,18 +140,41 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 	if uc.ln == nil {
 		//client dial
 		uc.client = true
-		if uc.readBatchs > 0 {
-			//go uc.ReadBatchLoop(uc.rxhandler)
-			InitPool(uc.maxBufSize)
-			go uc.readBatchLoopv2()
+		//init magic
+		_, err := rand.Read(uc.magic[:])
+		if err != nil {
+			return nil
 		}
-		if uc.writeBatchs > 0 {
-			//后台起一个goroutine 负责批量写，上层直接write 就行。
-			uc.txqueue = make(chan MyBuffer, uc.txqueuelen)
-			go uc.writeBatchLoop()
-		}
+		log.Printf("magic:%v\n", uc.magic)
 	}
 	return uc
+}
+
+// 握手, 目前暂时只发送一次magic. 不会重复发送, 避免服务器收到两次相同的magic。
+// TODO: 服务器保存magic,每次收到magicSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。
+func (c *UDPConn) handshake(_ context.Context) error {
+	//_, err := c.lconn.WriteTo(c.magic[:], c.raddr)
+	_, err := c.lconn.Write(c.magic[:])
+	if err != nil {
+		log.Printf("send magic err:%v", err)
+		return err
+	}
+	buf := make([]byte, len(c.magic))
+	c.lconn.SetDeadline(time.Now().Add(time.Second * 2))
+	defer c.lconn.SetDeadline(time.Time{})
+	//_, raddr, err := c.lconn.ReadFrom(buf)
+	_, err = c.lconn.Read(buf)
+	if err != nil {
+		if e, ok := err.(net.Error); ok && e.Temporary() {
+			//todo
+		}
+		return err
+	}
+
+	if reflect.DeepEqual(buf, c.magic[:]) {
+		return nil
+	}
+	return fmt.Errorf("magic not match")
 }
 
 func (c *UDPConn) PutRxQueue(data []byte) {

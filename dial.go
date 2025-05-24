@@ -36,6 +36,24 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	// if c.rxhandler != nil {
 	// 	go c.ReadBatchLoop(c.rxhandler)
 	// }
+	err = c.handshake(ctx)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+
+	if c.client {
+		if c.readBatchs > 0 {
+			//go uc.ReadBatchLoop(uc.rxhandler)
+			InitPool(c.maxBufSize)
+			go c.readBatchLoopv2()
+		}
+		if c.writeBatchs > 0 {
+			//后台起一个goroutine 负责批量写，上层直接write 就行。
+			c.txqueue = make(chan MyBuffer, c.txqueuelen)
+			go c.writeBatchLoop()
+		}
+	}
 	return c, nil
 }
 
