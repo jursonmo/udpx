@@ -36,7 +36,7 @@ type UDPConn struct {
 	//如果上层能保证一次性读完MyBuffer的内容，可以设置此为true.如果上层用bufio来读,一般能一次性读完
 	//udp基于报文收发的, 系统默认就是要一次性读完的一个报文，不读完，内核就丢弃这个报文剩下的那部分，下次再读也读不到
 	//设置此为true后，又一次性没读完，返回错误shortReadErr
-	oneshotRead bool
+	oneshotRead bool //默认为true, udp 就应该是oneshotRead, 即业务层传进来的buff 必须足够大，能一次性读完一个udp报文
 
 	undrainedBufferMux  sync.Mutex
 	lastUndrainedBuffer MyBuffer //在不要求一次性MyBuffer的内容的时候，没读完的就放在lastUndrainedBuffer 里
