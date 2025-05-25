@@ -59,6 +59,12 @@ func MaxPacketSize(n int) LnCfgOptions {
 	}
 }
 
+func OneShotRead(b bool) LnCfgOptions {
+	return func(lc *ListenConfig) {
+		lc.oneshotRead = b
+	}
+}
+
 func CfgLogger(l Logger) LnCfgOptions {
 	return func(lc *ListenConfig) {
 		lc.logger = l
@@ -73,8 +79,8 @@ type ListenConfig struct {
 	listenerNum   int
 	batchs        int //one
 	maxPacketSize int
-
-	logger Logger
+	oneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
+	logger        Logger
 }
 
 type UdpListen struct {
@@ -90,11 +96,11 @@ type UdpListen struct {
 }
 
 func (l *UdpListen) String() string {
-	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v", l.cfg.listenerNum, l.Addr(), l.cfg.reuseport)
+	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v, oneshotRead:%v", l.cfg.listenerNum, l.Addr(), l.cfg.reuseport, l.cfg.oneshotRead)
 }
 
 func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOptions) (*UdpListen, error) {
-	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
+	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs, oneshotRead: true, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -129,7 +135,7 @@ func (ln *UdpListen) Start() error {
 	ln.listeners = make([]*Listener, cfg.listenerNum)
 	for i := 0; i < cfg.listenerNum; i++ {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
-			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize), WithLogger(ln.logger))
+			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize), WithLogger(ln.logger), LnWithOneshotRead(cfg.oneshotRead))
 		if err != nil {
 			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
@@ -250,6 +256,7 @@ type Listener struct {
 	maxPacketSize  int
 	dead           chan struct{}
 	closed         bool
+	oneshotRead    bool //默认为true, udp 就应该是oneshotRead, 即业务层传进来的buff 必须足够大，能一次性读完一个udp报文
 }
 type ListenerOpt func(*Listener)
 
@@ -280,6 +287,12 @@ func WithMode(m int) ListenerOpt {
 func WithLogger(log Logger) ListenerOpt {
 	return func(l *Listener) {
 		l.logger = log
+	}
+}
+
+func LnWithOneshotRead(b bool) ListenerOpt {
+	return func(l *Listener) {
+		l.oneshotRead = b
 	}
 }
 
@@ -391,12 +404,13 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		if len(data) != magicSize {
 			return nil, true
 		}
-		//new udpConn
-		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
-		uc.magic[0] = data[0]
-		uc.magic[1] = data[1]
-		uc.magic[2] = data[2]
-		uc.magic[3] = data[3]
+		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
+		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
+		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead))
+		n := copy(uc.magic[:], data)
+		if n != magicSize {
+			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
+		}
 
 		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
 			l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
@@ -485,8 +499,8 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, batchs:%d, local:%s://%s",
-		l.id, l.batchs, l.LocalAddr().Network(), l.LocalAddr().String())
+	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s",
+		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String())
 }
 
 func (l *Listener) ListClientConns() []*UDPConn {
