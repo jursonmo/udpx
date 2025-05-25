@@ -1,10 +1,12 @@
 package udpx
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
@@ -13,10 +15,17 @@ import (
 
 var ErrConnClosed = errors.New("Conn Closed")
 
+const (
+	magicSize = 4
+)
+
+var fixedMagic [magicSize]byte = [magicSize]byte{0x01, 0x02, 0x03, 0x04}
+
 type UDPConn struct {
 	mux    sync.Mutex
 	ln     *Listener
 	client bool //true表示lconn is conneted(绑定了目的地址), 即可以直接用Write，不需要WriteTo
+	magic  [magicSize]byte
 	lconn  *net.UDPConn
 	pc     *ipv4.PacketConn
 	raddr  *net.UDPAddr
@@ -27,7 +36,7 @@ type UDPConn struct {
 	//如果上层能保证一次性读完MyBuffer的内容，可以设置此为true.如果上层用bufio来读,一般能一次性读完
 	//udp基于报文收发的, 系统默认就是要一次性读完的一个报文，不读完，内核就丢弃这个报文剩下的那部分，下次再读也读不到
 	//设置此为true后，又一次性没读完，返回错误shortReadErr
-	oneshotRead bool
+	oneshotRead bool //默认为true, udp 就应该是oneshotRead, 即业务层传进来的buff 必须足够大，能一次性读完一个udp报文
 
 	undrainedBufferMux  sync.Mutex
 	lastUndrainedBuffer MyBuffer //在不要求一次性MyBuffer的内容的时候，没读完的就放在lastUndrainedBuffer 里
@@ -114,8 +123,8 @@ func WithOneshotRead(b bool) UDPConnOpt {
 
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
 	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1),
-		rxqueuelen:  256,
-		txqueuelen:  256,
+		rxqueuelen:  512,
+		txqueuelen:  512,
 		readBatchs:  defaultBatchs,
 		writeBatchs: defaultBatchs,
 		maxBufSize:  defaultMaxPacketSize,
@@ -132,18 +141,42 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 	if uc.ln == nil {
 		//client dial
 		uc.client = true
-		if uc.readBatchs > 0 {
-			//go uc.ReadBatchLoop(uc.rxhandler)
-			InitPool(uc.maxBufSize)
-			go uc.readBatchLoopv2()
-		}
-		if uc.writeBatchs > 0 {
-			//后台起一个goroutine 负责批量写，上层直接write 就行。
-			uc.txqueue = make(chan MyBuffer, uc.txqueuelen)
-			go uc.writeBatchLoop()
-		}
+		//init magic
+		// _, err := rand.Read(uc.magic[:])
+		// if err != nil {
+		// 	return nil
+		// }
+		// log.Printf("magic:%v\n", uc.magic)
+		uc.magic = fixedMagic
 	}
 	return uc
+}
+
+// 握手, 目前暂时只发送一次magic. 不会重复发送, 避免服务器收到两次相同的magic。
+// TODO: 服务器保存magic,每次收到magicSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。
+func (c *UDPConn) handshake(_ context.Context) error {
+	//_, err := c.lconn.WriteTo(c.magic[:], c.raddr)
+	_, err := c.lconn.Write(c.magic[:])
+	if err != nil {
+		log.Printf("send magic err:%v", err)
+		return err
+	}
+	buf := make([]byte, len(c.magic))
+	c.lconn.SetDeadline(time.Now().Add(time.Second * 2))
+	defer c.lconn.SetDeadline(time.Time{})
+	//_, raddr, err := c.lconn.ReadFrom(buf)
+	_, err = c.lconn.Read(buf)
+	if err != nil {
+		if e, ok := err.(net.Error); ok && e.Temporary() {
+			//todo
+		}
+		return err
+	}
+
+	if reflect.DeepEqual(buf, c.magic[:]) {
+		return nil
+	}
+	return fmt.Errorf("magic not match")
 }
 
 func (c *UDPConn) PutRxQueue(data []byte) {
@@ -215,7 +248,7 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	if c.client && c.readBatchs == 0 {
 		return c.lconn.Read(buf)
 	}
-
+	user_buf_len := len(buf)
 	//这里有两种处理，
 	//1: oneshot, 要求一次性读完MyBuffer 的内容，一次未读完就报错。(如果业务层使用了bufio的话，一般都能一次性读完,所以使用oneShot)
 	//2. 可以不要求一次性读完，没有读完的下次再读, 这样应用层合理的方式就是只有一个线程在调用Read, 但是为了支持多线程读，这里只能加锁。
@@ -240,16 +273,22 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	//1.客户端读模式, 启用了batch读(说明后台有任务负责批量读), 这里只需从队列里读
 	//2.服务端模式, 不管是否批量读，都是由listen socket去完成读，UDPConn只需从队列里读
 	select {
-	case b := <-c.rxqueueB: //[]byte rxqueue
+	case b, ok := <-c.rxqueueB: //[]byte rxqueue
+		if !ok {
+			return 0, errors.New("rxqueueB closed")
+		}
 		n = copy(buf, b)
 		return
-	case b := <-c.rxqueue: //MyBuffer rxqueue
+	case b, ok := <-c.rxqueue: //MyBuffer rxqueue
+		if !ok {
+			return 0, errors.New("rxqueue closed")
+		}
 		//这里有两种处理，1: 要求一次性读完MyBuffer 的内容，一次未读完就报错。2. 可以不要求一次性读完，没有读完的下次再读
 		if c.oneshotRead {
 			n, err = b.Read(buf)
 			Release(b)
 			if err == nil && len(b.Bytes()) > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回shortReadErr
-				err = shortReadErr
+				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, %w", user_buf_len, n, shortReadErr)
 			}
 			return
 		} else {

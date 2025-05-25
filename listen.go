@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -82,7 +83,7 @@ type UdpListen struct {
 	logger    Logger
 	listeners []*Listener
 	laddr     *net.UDPAddr
-	accept    chan net.Conn
+	accept    chan net.Conn // 收集所有listeners accept 到的连接, 上层可以通过Accept()来获取, 这个队列可以使得大一点，避免阻塞
 	dead      chan struct{}
 	closed    bool
 	cfg       ListenConfig
@@ -105,7 +106,7 @@ func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOption
 	ln := &UdpListen{
 		ctx:    ctx,
 		cfg:    cfg,
-		accept: make(chan net.Conn, 256),
+		accept: make(chan net.Conn, 1024),
 		dead:   make(chan struct{}, 1),
 		logger: cfg.logger,
 		//[UdpListen]2024/01/04 18:02:13 INFO: listener, id:1, batchs:8, local:udp://[::]:3333 listenning....
@@ -287,7 +288,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	for _, opt := range opts {
 		opt(l)
 	}
-	l.accept = make(chan *UDPConn, 128)
+	l.accept = make(chan *UDPConn, 512)
 
 	var lc = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -365,14 +366,17 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 		return
 	}
 
-	uc = l.getUDPConn(addr)
-
+	uc, isCtrlData := l.getUDPConn(addr, data)
+	if isCtrlData {
+		//data 是初始化用的控制数据，不需要处理
+		return
+	}
 	if uc.rxhandler != nil {
 		uc.rxhandler(data)
 	}
 }
 
-func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
+func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlData bool) {
 	// go tool pprof -alloc_objects http://192.168.64.5:6061/debug/pprof/heap
 	//raddr := addr.String() //net.UDPConn.String() 方法会产生很多小对象, 不如把addr 转化一下
 	udpaddr := addr.(*net.UDPAddr)
@@ -380,18 +384,39 @@ func (l *Listener) getUDPConn(addr net.Addr) (uc *UDPConn) {
 	if !ok {
 		return
 	}
+
 	v, ok := l.clients.Load(key)
 	if !ok {
+		//new client? check magic
+		if len(data) != magicSize {
+			return nil, true
+		}
 		//new udpConn
 		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize))
-		l.logger.Infof("%v, new conn:%v", l, addr)
+		uc.magic[0] = data[0]
+		uc.magic[1] = data[1]
+		uc.magic[2] = data[2]
+		uc.magic[3] = data[3]
+
+		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
+			l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
+			return nil, true
+		}
+		l.logger.Infof("%v, new conn:%v, magic:%v", l, addr, uc.magic)
 		l.clients.Store(key, uc)
 		atomic.AddInt64(&l.clientCount, 1)
+		//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
 		l.accept <- uc
-	} else {
-		uc = v.(*UDPConn)
+		return uc, true
 	}
-	return uc
+	uc = v.(*UDPConn)
+
+	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
+	//这样导致的后果就是业务层不能发送跟 magic 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
+	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic[:]) {
+		return uc, true
+	}
+	return uc, false
 }
 
 func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {

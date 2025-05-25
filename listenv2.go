@@ -29,12 +29,18 @@ func (l *Listener) readBatchLoopv2() error {
 			l.Close()
 			return pkgerr.WithMessagef(err, "listener:%v, ReadBatch err", l.lconn.LocalAddr())
 		}
-		if l.mode == DebugMode {
-			l.logger.Infof("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))
-		}
+
 		if n == 0 {
 			continue
 		}
+
+		if l.mode == DebugMode {
+			l.logger.Infof("readBatchLoopv2 listener id:%d, batch got n:%d, max len(ms):%d\n", l.id, n, len(rms))
+			for i := 0; i < n; i++ {
+				l.logger.Infof("readBatchLoopv2 listener id:%d, ms[%d].N:%d, ms[%d].Addr:%v\n", l.id, i, rms[i].N, i, rms[i].Addr)
+			}
+		}
+
 		for i := 0; i < n; i++ {
 			buffers[i].Advance(rms[i].N)
 			l.handleBuffer(rms[i].Addr, buffers[i])
@@ -43,7 +49,8 @@ func (l *Listener) readBatchLoopv2() error {
 }
 
 func (l *Listener) handleBuffer(addr net.Addr, b MyBuffer) {
-	if uc := l.getUDPConn(addr); uc != nil {
+	//TODO:
+	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
 		uc.PutRxQueue2(b)
 	}
 }
