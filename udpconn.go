@@ -248,7 +248,7 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	if c.client && c.readBatchs == 0 {
 		return c.lconn.Read(buf)
 	}
-
+	user_buf_len := len(buf)
 	//这里有两种处理，
 	//1: oneshot, 要求一次性读完MyBuffer 的内容，一次未读完就报错。(如果业务层使用了bufio的话，一般都能一次性读完,所以使用oneShot)
 	//2. 可以不要求一次性读完，没有读完的下次再读, 这样应用层合理的方式就是只有一个线程在调用Read, 但是为了支持多线程读，这里只能加锁。
@@ -275,20 +275,20 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	select {
 	case b, ok := <-c.rxqueueB: //[]byte rxqueue
 		if !ok {
-			return 0, ErrConnClosed
+			return 0, errors.New("rxqueueB closed")
 		}
 		n = copy(buf, b)
 		return
 	case b, ok := <-c.rxqueue: //MyBuffer rxqueue
 		if !ok {
-			return 0, ErrConnClosed
+			return 0, errors.New("rxqueue closed")
 		}
 		//这里有两种处理，1: 要求一次性读完MyBuffer 的内容，一次未读完就报错。2. 可以不要求一次性读完，没有读完的下次再读
 		if c.oneshotRead {
 			n, err = b.Read(buf)
 			Release(b)
 			if err == nil && len(b.Bytes()) > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回shortReadErr
-				err = shortReadErr
+				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, %w", user_buf_len, n, shortReadErr)
 			}
 			return
 		} else {
