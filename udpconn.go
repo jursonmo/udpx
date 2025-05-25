@@ -286,10 +286,11 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 		//这里有两种处理，1: 要求一次性读完MyBuffer 的内容，一次未读完就报错。2. 可以不要求一次性读完，没有读完的下次再读
 		if c.oneshotRead {
 			n, err = b.Read(buf)
-			Release(b)
-			if err == nil && len(b.Bytes()) > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回shortReadErr
-				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, %w", user_buf_len, n, shortReadErr)
+			remain := len(b.Bytes())
+			if err == nil && remain > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回shortReadErr
+				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, remain:%d, %w", user_buf_len, n, remain, shortReadErr)
 			}
+			Release(b) //fixbug:放在这里释放MyBuffer, 不能放在读取len(b.Bytes())前。
 			return
 		} else {
 			//支持MyBuffer多次读的情况
