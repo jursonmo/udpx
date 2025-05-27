@@ -9,3 +9,22 @@
 9. client dial 生成的UDPConn，通过udp.WithReadBatchs(0)来控制是否在后台起一个goroutine 来批量读，而不是udp.WithRxHandler(nil)来控制
 10. client 用readBatchLoopv2 来代替 readBatchLoop，这样可以复用内存对象，减少一次内存copy, 跟 listener readBatchLoopv2 一样
 11. todo: udpx只负责高性能收发报文，不涉及到控制数据，也不涉及协议格式设置，心跳应该由上层协议来处理。tcp 可以有keepalive的配置，因为tcp 协议就是具备发送控制数据的能力，tcp 协议头部就有20个字节，但是udp只有8个字节，无法发送控制数据，所以心跳应该由上层协议来实现，但是udpx listener 也需要检查它ACCEPT的UDPConn socket 是否死掉，比如上层协议处理异常，永远不关闭udp conn，那么udpx listener就会积累很多UDPConn对象，所以udpx listener要定期查看它产生的UDPConn对象是否超过很长时间没有流量了，比如一个小时等，超过就关闭并删除UDPConn对象(finished at 2023-12-23)。(finish: 打印ln 的信息，包括其生成的所有udpConn)
+
+12. 收发数据的流程：
+request:
+udpx client send --> put to udpx client udpConn's txqueue (这里可以阻塞,应该阻塞,除非设置非阻塞或超时时间) ---> udpx client pc write batchs task--> [....networt....] 
+--> udpx listener --> find the udpConn, and put to the udpConn rxqueue (这里不能阻塞,因为可能会影响listener接受其他udpConn的数据)--> udpx client Read().  
+listener 必须要知道client的地址，才能找到对应的udpConn. listener 是没有rxqueue的.
+
+response:
+server udpConn Write() --> put to it's listener txqueue(这里可以阻塞) --> listener write batchs task ---> [....networt....]
+---> udpx client udpConn read batchs task --> put to udpx client udpConn rxqueue(阻不阻塞都可以)--> udpx client udpConn Read()
+
+服务器这边的udpConn 是不会用到自己的txqueue channel的，因为服务器的udpConn 是由listener 生成的，统一由listener conn来写，即统一Put to listener 的 txqueue. 再由listener 批量写。
+
+所以服务器的udpConn 只用到 rxqueue.没有用到自己txqueue的，TOOD：服务器这边的udpConn 不需要分配自己的txqueue, 节省内存。可以适当加到 listener txqueue长度。
+
+TODO:
++ 1. udpx client send msg and  put to udpx client udpConn's txqueue , 这里可以阻塞,应该阻塞,除非设置非阻塞, 或超时时间, 非阻塞返回ErrChannelFull, 超时返回ErrTimeout. 这样上层协议就可以控制发送速度了.
++ 2. 同理， server udpConn Write() --> put to it's listener txqueue, 这里也应该阻塞。
+
