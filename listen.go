@@ -246,11 +246,17 @@ type Listener struct {
 	pc     *ipv4.PacketConn
 	mode   int
 	//ln      net.Listener
-	clients        sync.Map
-	expire         time.Duration //client expire ,根据clients的数量
-	clientCount    int64
-	accept         chan *UDPConn
-	txqueue        chan MyBuffer
+	clients     sync.Map
+	expire      time.Duration //client expire ,根据clients的数量
+	clientCount int64
+	accept      chan *UDPConn
+	txqueue     chan MyBuffer
+	txPackets   int64 //统计发送的包数,是所有属于它所accept的UdpConn的发送的包数总和
+	txDropPkts  int64
+	rxPackets   int64
+	rxDropPkts  int64
+	//txDropBytes    int64
+
 	writeBatchAble bool // write batch is enable?
 	batchs         int
 	maxPacketSize  int
@@ -499,8 +505,8 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s",
-		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String())
+	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d",
+		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts)
 }
 
 func (l *Listener) ListClientConns() []*UDPConn {

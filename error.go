@@ -2,7 +2,8 @@ package udpx
 
 import "net"
 
-var ErrTxQueueFull = &TxQueueFullError{"Err txqueueu is full"}
+var ErrTxQueueFull = &QueueFullError{"Err txqueueu is full"}
+var ErrRxQueueFull = &QueueFullError{"Err rxqueueu is full"}
 var _ net.Error = ErrTxQueueFull //for compile check
 
 /* net.Error
@@ -16,23 +17,23 @@ type Error interface {
 	Temporary() bool
 }
 */
-//TxQueueFullError 实现net.Error, 这样上次就可以判断是Temporary()，判断是否断开UDPConn还是 try again
+//QueueFullError 实现net.Error, 这样上次就可以判断是Temporary()，判断是否断开UDPConn还是 try again
 
-type TxQueueFullError struct {
+type QueueFullError struct {
 	s string
 }
 
-func (e *TxQueueFullError) New(s string) {
+func (e *QueueFullError) New(s string) {
 	e.s = s
 }
 
 // 实现 error 接口的方法: Error() string
-func (e *TxQueueFullError) Error() string {
+func (e *QueueFullError) Error() string {
 	return e.s
 }
-func (e *TxQueueFullError) Timeout() bool {
+func (e *QueueFullError) Timeout() bool {
 	return false
 }
-func (e *TxQueueFullError) Temporary() bool {
+func (e *QueueFullError) Temporary() bool {
 	return true
 }

@@ -127,7 +127,7 @@ func (c *UDPConn) readBatchLoopv2() error {
 	}
 }
 
-func (c *UDPConn) PutRxQueue2(b MyBuffer) {
+func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 	//todo: check control packet or data packet,
 	//但是我认为，不应该在这里做控制层相关的业务，因为它只需提供连接的收发操作即可
 	//如果需要握手验证和心跳，应该是在业务层做，或者在业务层和底层之间加一层来实现协议格式和控制协议报文
@@ -140,5 +140,7 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) {
 		c.rxDropPkts += 1
 		//c.rxDropBytes += int64(len(b.Bytes()))
 		Release(b)
+		return ErrRxQueueFull
 	}
+	return nil
 }

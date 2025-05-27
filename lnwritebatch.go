@@ -30,6 +30,11 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 	if c.ln != nil {
 		b.SetAddr(c.raddr)
 		err = c.ln.PutTxQueue(b)
+		if err != nil {
+			c.txDropPkts++
+		} else {
+			c.txPackets++
+		}
 	} else {
 		err = c.PutTxQueue(b)
 	}
@@ -43,7 +48,10 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 func (l *Listener) PutTxQueue(b MyBuffer) error {
 	select {
 	case l.txqueue <- b:
+		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
 	default:
+		l.txDropPkts++
+		//l.txDropBytes += int64(len(b.Bytes()))
 		Release(b)
 		return ErrTxQueueFull
 	}

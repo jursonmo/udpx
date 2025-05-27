@@ -49,8 +49,12 @@ func (l *Listener) readBatchLoopv2() error {
 }
 
 func (l *Listener) handleBuffer(addr net.Addr, b MyBuffer) {
-	//TODO:
+	//只统计非ctrl数据的包数
 	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
-		uc.PutRxQueue2(b)
+		if err := uc.PutRxQueue2(b); err != nil {
+			l.rxDropPkts++
+		} else {
+			l.rxPackets++
+		}
 	}
 }

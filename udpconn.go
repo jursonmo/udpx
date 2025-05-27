@@ -43,6 +43,9 @@ type UDPConn struct {
 
 	txqueue     chan MyBuffer
 	txqueuelen  int
+	txPackets   int64
+	txDropPkts  int64
+	txDropBytes int64
 	rxqueue     chan MyBuffer
 	rxqueueB    chan []byte
 	rxhandler   func([]byte)
@@ -349,7 +352,10 @@ func (c *UDPConn) PutTxQueue(b MyBuffer) error {
 	}
 	select {
 	case c.txqueue <- b:
+		c.txPackets++ //统计发送的包数,但是不是很严谨,因为这不能代表已经发送出去了。
 	default:
+		c.txDropPkts++
+		//c.txDropBytes += int64(len(b.Bytes()))
 		Release(b)
 		return ErrTxQueueFull
 	}
@@ -357,7 +363,8 @@ func (c *UDPConn) PutTxQueue(b MyBuffer) error {
 }
 
 func (c *UDPConn) String() string {
-	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v,rwbatch(%d,%d)", c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs)
+	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d",
+		c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts)
 }
 
 // 重新对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
