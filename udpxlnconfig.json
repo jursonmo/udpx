@@ -1,0 +1,8 @@
+{
+    "reuseport": true,  
+	"$listenerNum":1,
+	"batches":8,       
+	"txBlocked": true,     
+	"maxPacketSize": 1700,
+	"oneshotRead": true
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -36,32 +37,32 @@ type LnCfgOptions func(*ListenConfig)
 
 func WithReuseport(b bool) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.reuseport = true
+		lc.Reuseport = true
 	}
 }
 
 func WithListenerNum(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.listenerNum = n
+		lc.ListenerNum = n
 	}
 }
 
 // 如果不用batchs 读写, 设置成 0
 func Batchs(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.batchs = n
+		lc.Batchs = n
 	}
 }
 
 func MaxPacketSize(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.maxPacketSize = n
+		lc.MaxPacketSize = n
 	}
 }
 
 func OneShotRead(b bool) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.oneshotRead = b
+		lc.OneshotRead = b
 	}
 }
 
@@ -75,11 +76,12 @@ type ListenConfig struct {
 	network string
 	addr    string
 	//raddr     string
-	reuseport     bool //如果没有指定listenerNum，且reuseport =true,那么就GOPROCESS来作为listenerNum
-	listenerNum   int
-	batchs        int //one
-	maxPacketSize int
-	oneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
+	Reuseport     bool //如果没有指定listenerNum，且reuseport =true,那么就GOPROCESS来作为listenerNum
+	ListenerNum   int
+	Batchs        int  //one
+	TxBlocked     bool //默认为true, 默认阻塞模式
+	MaxPacketSize int
+	OneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
 	logger        Logger
 }
 
@@ -96,11 +98,43 @@ type UdpListen struct {
 }
 
 func (l *UdpListen) String() string {
-	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v, oneshotRead:%v", l.cfg.listenerNum, l.Addr(), l.cfg.reuseport, l.cfg.oneshotRead)
+	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v, oneshotRead:%v", l.cfg.ListenerNum, l.Addr(), l.cfg.Reuseport, l.cfg.OneshotRead)
+}
+
+func DefaultLnConfig() ListenConfig {
+	return ListenConfig{
+		Reuseport:     true,
+		MaxPacketSize: defaultMaxPacketSize,
+		Batchs:        defaultBatchs,
+		TxBlocked:     true,
+		OneshotRead:   true,
+		logger:        StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())},
+	}
+}
+
+// priority: defaultConfig < configPath < opts
+func LoadLnConfig(configPath string) (ListenConfig, error) {
+	cfg := DefaultLnConfig()
+	if configPath == "" {
+		return cfg, nil
+	}
+	file, err := os.ReadFile(configPath)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to read config file: %v", err)
+	}
+	err = json.Unmarshal(file, &cfg)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to unmarshal config file: %v", err)
+	}
+	return cfg, nil
 }
 
 func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOptions) (*UdpListen, error) {
-	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs, oneshotRead: true, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
+	//cfg := ListenConfig{network: network, addr: addr, Batchs: defaultBatchs, OneshotRead: true, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
+	cfg, _ := LoadLnConfig("./udpxlnconfig.json")
+	cfg.network = network
+	cfg.addr = addr
+
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -132,10 +166,11 @@ func (ln *UdpListen) Start() error {
 		return pkgerr.Wrapf(err, "ResolveUDPAddr %s://%s fail", cfg.network, cfg.addr)
 	}
 	ln.laddr = laddr
-	ln.listeners = make([]*Listener, cfg.listenerNum)
-	for i := 0; i < cfg.listenerNum; i++ {
+	ln.listeners = make([]*Listener, cfg.ListenerNum)
+	for i := 0; i < cfg.ListenerNum; i++ {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
-			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize), WithLogger(ln.logger), LnWithOneshotRead(cfg.oneshotRead))
+			WithId(i), WithLnBatchs(cfg.Batchs), WithLnMaxPacketSize(cfg.MaxPacketSize),
+			WithLogger(ln.logger), LnWithOneshotRead(cfg.OneshotRead), LnWithTxBlocked(cfg.TxBlocked))
 		if err != nil {
 			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
@@ -152,20 +187,20 @@ func (cfg *ListenConfig) Tidy() error {
 	}
 
 	//如果没有设置listener 的数量, 那么如果开启reuseport,就按cpu的个数来，否则就认为没有开口reuseport，即listner 数量只有一个
-	if cfg.listenerNum == 0 {
-		if cfg.reuseport {
-			cfg.listenerNum = runtime.GOMAXPROCS(0)
+	if cfg.ListenerNum == 0 {
+		if cfg.Reuseport {
+			cfg.ListenerNum = runtime.GOMAXPROCS(0)
 		} else {
-			cfg.listenerNum = 1
+			cfg.ListenerNum = 1
 		}
 	}
 
-	if cfg.listenerNum <= 0 {
+	if cfg.ListenerNum <= 0 {
 		log.Panicln("invaild, listenerNum <= 0")
 	}
 
-	if cfg.maxPacketSize == 0 {
-		cfg.maxPacketSize = defaultMaxPacketSize
+	if cfg.MaxPacketSize == 0 {
+		cfg.MaxPacketSize = defaultMaxPacketSize
 	}
 
 	return nil
