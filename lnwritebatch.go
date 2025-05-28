@@ -29,14 +29,14 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 
 	if c.ln != nil {
 		b.SetAddr(c.raddr)
-		err = c.ln.PutTxQueue(b)
+		err = c.ln.PutTxQueue(b, c.txBlocked)
 		if err != nil {
 			c.txDropPkts++
 		} else {
 			c.txPackets++
 		}
 	} else {
-		err = c.PutTxQueue(b)
+		err = c.PutTxQueue(b, c.txBlocked)
 	}
 	if err != nil {
 		return 0, err
@@ -45,7 +45,14 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 }
 
 // 返回的error 应该实现net.Error temporary(), 这样上层Write可以认为Eagain,再次调用Write
-func (l *Listener) PutTxQueue(b MyBuffer) error {
+func (l *Listener) PutTxQueue(b MyBuffer, blocked bool) error {
+	if blocked {
+		l.txqueue <- b
+		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
+		return nil
+	}
+
+	//non-blocked
 	select {
 	case l.txqueue <- b:
 		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了

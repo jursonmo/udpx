@@ -7,3 +7,5 @@ var defaultBatchs = 8
 // 发大包，是为了一次系统调用可以发更多的数据，但是用了sendmmsg,本来就可以一次系统调用能发多个报文了
 // 就没必要发送一个大小超过mtu 值的报文。
 var defaultMaxPacketSize = 1600
+
+var txqueueBlocked = true //全局默认值, 意思是批量发送时, 发送队列满了，是否阻塞

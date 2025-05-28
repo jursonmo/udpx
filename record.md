@@ -25,6 +25,6 @@ server udpConn Write() --> put to it's listener txqueue(这里可以阻塞) --> 
 所以服务器的udpConn 只用到 rxqueue.没有用到自己txqueue的，TOOD：服务器这边的udpConn 不需要分配自己的txqueue, 节省内存。可以适当加到 listener txqueue长度。
 
 TODO:
-+ 1. udpx client send msg and  put to udpx client udpConn's txqueue , 这里可以阻塞,应该阻塞,除非设置非阻塞, 或超时时间, 非阻塞返回ErrChannelFull, 超时返回ErrTimeout. 这样上层协议就可以控制发送速度了.
-+ 2. 同理， server udpConn Write() --> put to it's listener txqueue, 这里也应该阻塞。
++ 1. udpx client send msg and  put to udpx client udpConn's txqueue , 这里可以阻塞,应该阻塞,除非设置非阻塞, 或超时时间, 非阻塞返回ErrChannelFull, 超时返回ErrTimeout. 这样上层协议就可以控制发送速度了.(done: 2025-05-28晚上10; 默认发送是阻塞的。)
++ 2. 同理， server udpConn Write() --> put to it's listener txqueue, 这里也应该阻塞。(done: 2025-05-28晚上10; 默认发送是阻塞的。)
 

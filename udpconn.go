@@ -41,6 +41,7 @@ type UDPConn struct {
 	undrainedBufferMux  sync.Mutex
 	lastUndrainedBuffer MyBuffer //在不要求一次性MyBuffer的内容的时候，没读完的就放在lastUndrainedBuffer 里
 
+	txBlocked   bool //发送时，是否会阻塞, 默认为true, 即阻塞
 	txqueue     chan MyBuffer
 	txqueuelen  int
 	txPackets   int64
@@ -124,8 +125,19 @@ func WithOneshotRead(b bool) UDPConnOpt {
 	}
 }
 
+func WithTxBlocked(b bool) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.txBlocked = b
+	}
+}
+
+// listener accept 得到 udpc conn 后, 不想跟listener 的txBlocked 属性一样，可以设置此接口来设置发送时是否可以阻塞。默认是true,是阻塞的。
+func (uc *UDPConn) SetTxBlocked(b bool) {
+	uc.txBlocked = b
+}
+
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
-	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1),
+	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1), txBlocked: txqueueBlocked,
 		rxqueuelen:  512,
 		txqueuelen:  512,
 		readBatchs:  defaultBatchs,
@@ -325,7 +337,13 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 		if c.writeBatchs > 0 {
 			return c.WriteWithBatch(b)
 		}
-		return c.lconn.Write(b)
+		n, err = c.lconn.Write(b)
+		if err != nil {
+			c.txDropPkts++
+		} else {
+			c.txPackets++
+		}
+		return
 	}
 
 	//the conn that accepted by listener
@@ -336,7 +354,15 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 	if c.ln.WriteBatchAble() {
 		return c.WriteWithBatch(b)
 	}
-	return c.lconn.WriteTo(b, c.raddr)
+	n, err = c.lconn.WriteTo(b, c.raddr)
+	if err != nil {
+		c.txDropPkts++
+		c.ln.txDropPkts++
+	} else {
+		c.txPackets++
+		c.ln.txPackets++
+	}
+	return
 }
 
 func (c *UDPConn) writeBatchLoop() {
@@ -346,10 +372,18 @@ func (c *UDPConn) writeBatchLoop() {
 }
 
 // 返回的error 应该实现net.Error temporary(), 这样上层Write可以认为Eagain,再次调用Write
-func (c *UDPConn) PutTxQueue(b MyBuffer) error {
+func (c *UDPConn) PutTxQueue(b MyBuffer, blocked bool) error {
 	if c.closed {
 		return ErrConnClosed
 	}
+
+	if blocked {
+		c.txqueue <- b
+		c.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
+		return nil
+	}
+
+	//non-blocked
 	select {
 	case c.txqueue <- b:
 		c.txPackets++ //统计发送的包数,但是不是很严谨,因为这不能代表已经发送出去了。
@@ -363,8 +397,8 @@ func (c *UDPConn) PutTxQueue(b MyBuffer) error {
 }
 
 func (c *UDPConn) String() string {
-	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d",
-		c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts)
+	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
 }
 
 // 重新对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,

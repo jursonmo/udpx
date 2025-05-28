@@ -250,6 +250,7 @@ type Listener struct {
 	expire      time.Duration //client expire ,根据clients的数量
 	clientCount int64
 	accept      chan *UDPConn
+	txBlocked   bool //默认为true; 批量发送时，会用到txqueue, 写到txqueue是否阻塞; accept所产生的UdpConn默认都以其listener的txBlocked来决定是否阻塞发送。但是可以通过UdpConn的SetTxBlocked()来改变。
 	txqueue     chan MyBuffer
 	txPackets   int64 //统计发送的包数,是所有属于它所accept的UdpConn的发送的包数总和
 	txDropPkts  int64
@@ -302,8 +303,14 @@ func LnWithOneshotRead(b bool) ListenerOpt {
 	}
 }
 
+func LnWithTxBlocked(b bool) ListenerOpt {
+	return func(l *Listener) {
+		l.txBlocked = b
+	}
+}
+
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -412,7 +419,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		}
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
-		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead))
+		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 		n := copy(uc.magic[:], data)
 		if n != magicSize {
 			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
@@ -505,8 +512,8 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d",
-		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts)
+	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts, l.txBlocked)
 }
 
 func (l *Listener) ListClientConns() []*UDPConn {
