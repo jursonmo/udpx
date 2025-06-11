@@ -21,7 +21,7 @@ func (l *Listener) readBatchLoopv2() error {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)
 			buffers[i] = b
-			rms[i] = ipv4.Message{Buffers: [][]byte{b.Buffer()}}
+			rms[i] = ipv4.Message{Buffers: [][]byte{b.Buffer()}, Addr: nil}
 		}
 		n, err = l.pc.ReadBatch(rms, 0)
 		if err != nil {
@@ -43,6 +43,9 @@ func (l *Listener) readBatchLoopv2() error {
 
 		for i := 0; i < n; i++ {
 			buffers[i].Advance(rms[i].N)
+			if rms[i].Addr == nil {
+				panic("rms[i].Addr == nil")
+			}
 			l.handleBuffer(rms[i].Addr, buffers[i])
 		}
 	}

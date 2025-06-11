@@ -241,7 +241,7 @@ func (c *UDPConn) Close() error {
 	if c.client && c.lconn != nil {
 		c.lconn.Close()
 	}
-	log.Printf("client:%v, %s<->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
+	log.Printf("udpx client:%v, %s->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
 	return nil
 }
 
@@ -397,11 +397,15 @@ func (c *UDPConn) PutTxQueue(b MyBuffer, blocked bool) error {
 }
 
 func (c *UDPConn) String() string {
-	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
-		c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
+	var lnString = "ln is nil"
+	if c.ln != nil {
+		lnString = fmt.Sprintf("listener id:%v", c.ln.id)
+	}
+	return fmt.Sprintf("isClient:%v, %s, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		c.client, lnString, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
 }
 
-// 重新对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
+// 重写对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
 // 不然提示json: error calling MarshalJSON for type *udpx.UDPConn: invalid character '.' after object key:value pair
 func (c *UDPConn) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"isClient": %v,"raddr": "%s"}`, c.client, c.raddr.String())), nil

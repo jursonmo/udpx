@@ -18,13 +18,17 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 	b := GetMyBuffer(len(data))
 	if b == nil {
 		//data too bigger?
-		return 0, pkgerr.WithMessagef(ErrTooBig, "GetMyBuffer fail for data len:%d", len(data))
+		panic(fmt.Errorf("GetMyBuffer fail for data len:%d", len(data)))
+		//return 0, pkgerr.WithMessagef(ErrTooBig, "GetMyBuffer fail for data len:%d", len(data))
 	}
 	n, err = b.Write(data)
 	if err != nil {
 		//panic(err)
 		err = fmt.Errorf("put data in buffer fail, err:%w", err)
 		return
+	}
+	if n != len(data) {
+		panic(fmt.Errorf("n:%d, len(data):%d", n, len(data)))
 	}
 
 	if c.ln != nil {
@@ -36,6 +40,7 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 			c.txPackets++
 		}
 	} else {
+		//b.SetAddr(c.raddr) // ?? pc write 时，底层net.UDPConn 已经通过DialUDP() bind raddr ?
 		err = c.PutTxQueue(b, c.txBlocked)
 	}
 	if err != nil {
@@ -217,6 +222,10 @@ func (bw *PCBufioWriter) Flush() error {
 			bw.err = err
 			return err
 		}
+		// if n != len(msgs) {
+		// 	log.Printf("-------n:%d, len(msgs):%d--------\n", n, len(msgs))
+		// }
+
 		bw.commit(n)
 	}
 }

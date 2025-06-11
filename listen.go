@@ -220,6 +220,7 @@ func (ln *UdpListen) Listen() {
 					ln.logger.Errorf("%v Accept() err:%s and quit", l, err)
 					return
 				}
+				ln.logger.Infof("%v accept conn:%v", l.ShortString(), conn)
 				ln.accept <- conn
 			}
 		}(l)
@@ -482,7 +483,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 }
 
 func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {
-	l.logger.Errorf("id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
+	l.logger.Errorf("ln id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
 	_, exist := l.clients.LoadAndDelete(key)
 	if !exist {
 		//暂时用panic 来确保业务层对同一个conn 删除两次时，我可以看出来
@@ -547,8 +548,11 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+	return fmt.Sprintf("udpx listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
 		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts, l.txBlocked)
+}
+func (l *Listener) ShortString() string {
+	return fmt.Sprintf("udpx listener, id:%d, local:%s://%s", l.id, l.LocalAddr().Network(), l.LocalAddr().String())
 }
 
 func (l *Listener) ListClientConns() []*UDPConn {
