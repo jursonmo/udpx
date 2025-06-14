@@ -222,6 +222,7 @@ func (bw *PCBufioWriter) Flush() error {
 			bw.err = err
 			return err
 		}
+		// 流量大的时候,经常出现一次write 系统调用没能发送完，导致n<len(msgs)
 		// if n != len(msgs) {
 		// 	log.Printf("-------n:%d, len(msgs):%d--------\n", n, len(msgs))
 		// }

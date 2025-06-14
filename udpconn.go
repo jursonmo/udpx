@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-var ErrConnClosed = errors.New("Conn Closed")
+var ErrConnClosed = errors.New("conn closed")
 
 const (
 	magicSize = 4
