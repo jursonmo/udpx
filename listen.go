@@ -360,6 +360,19 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			}); err != nil {
 				return err
 			}
+
+			// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_RCVBUF, 1024*1024*5)
+			// }); err != nil {
+			// 	return err
+			// }
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_SNDBUF, 1024*1024*5)
+			// }); err != nil {
+			// 	return err
+			// }
+
 			return opErr
 		},
 	}
@@ -369,6 +382,11 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 		return nil, pkgerr.WithStack(err)
 	}
 	l.lconn = conn.(*net.UDPConn)
+	err = setSocketBuf(l.lconn, 1024*1024*5)
+	if err != nil {
+		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+	}
+
 	l.pc = ipv4.NewPacketConn(conn)
 
 	if l.batchs > 0 {

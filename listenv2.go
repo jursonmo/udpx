@@ -56,6 +56,10 @@ func (l *Listener) handleBuffer(addr net.Addr, b MyBuffer) {
 	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
 		if err := uc.PutRxQueue2(b); err != nil {
 			l.rxDropPkts++
+			if l.rxDropPkts&127 == 0 {
+				//iperf跑流量测试时,iperf显示丢包很多,但服务端这里没有打印
+				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, l.rxDropPkts)
+			}
 		} else {
 			l.rxPackets++
 		}

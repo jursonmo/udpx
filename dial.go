@@ -2,6 +2,7 @@ package udpx
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 
@@ -30,6 +31,11 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	lconn, err := net.DialUDP(network, la, ra)
 	if err != nil {
 		return nil, err
+	}
+
+	err = setSocketBuf(lconn, 1024*1024) //1M
+	if err != nil {
+		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
 	}
 
 	c := NewUDPConn(nil, lconn, ra, opts...)
@@ -139,6 +145,12 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 	default:
 		c.rxDropPkts += 1
 		//c.rxDropBytes += int64(len(b.Bytes()))
+
+		//iperf跑流量测试时,iperf显示丢包很多,但服务端这里没有打印, 压力测试了很久才打印一次,所以这里导致丢包的
+		if c.rxDropPkts&127 == 0 {
+			//panic(fmt.Errorf("notice udpxConn:%v, rxDropPkts:%d\n", c, c.rxDropPkts))
+			gLogger.Warnf("notice udpxConn:%v, rxDropPkts:%d\n", c, c.rxDropPkts)
+		}
 		Release(b)
 		return ErrRxQueueFull
 	}

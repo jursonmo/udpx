@@ -10,6 +10,8 @@ type Logger interface {
 	Debugf(format string, v ...interface{})
 }
 
+var gLogger Logger = StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}
+
 type StdLogger struct {
 	Logger *log.Logger
 }

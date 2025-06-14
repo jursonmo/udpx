@@ -64,6 +64,10 @@ func (l *Listener) PutTxQueue(b MyBuffer, blocked bool) error {
 	default:
 		l.txDropPkts++
 		//l.txDropBytes += int64(len(b.Bytes()))
+		if l.txDropPkts&127 == 0 {
+			//panic(fmt.Errorf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts))
+			l.logger.Warnf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts)
+		}
 		Release(b)
 		return ErrTxQueueFull
 	}

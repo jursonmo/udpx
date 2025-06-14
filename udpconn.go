@@ -164,6 +164,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 		// log.Printf("magic:%v\n", uc.magic)
 		uc.magic = fixedMagic
 	}
+	gLogger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
 
