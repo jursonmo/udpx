@@ -28,3 +28,35 @@ TODO:
 + 1. udpx client send msg and  put to udpx client udpConn's txqueue , 这里可以阻塞,应该阻塞,除非设置非阻塞, 或超时时间, 非阻塞返回ErrChannelFull, 超时返回ErrTimeout. 这样上层协议就可以控制发送速度了.(done: 2025-05-28晚上10; 默认发送是阻塞的。)
 + 2. 同理， server udpConn Write() --> put to it's listener txqueue, 这里也应该阻塞。(done: 2025-05-28晚上10; 默认发送是阻塞的。)
 
+TODO: udpx socket 缓冲区大小(Done at 2025-06-14晚上10)，以及 udp 相关信息，比如丢包等(Done at 2025-06-15)。
+```
+ cat /proc/sys/net/core/rmem_default
+ cat /proc/sys/net/core/wmem_default
+ cat /proc/sys/net/core/rmem_max
+ cat /proc/sys/net/core/wmem_max
+ cat /proc/sys/net/ipv4/udp_mem
+
+echo "12000000" > /proc/sys/net/core/wmem_max //最大12MB
+echo "12000000" > /proc/sys/net/core/rmem_max
+
+```
+
+```
+ss -uampn
+选项说明：
+-u：只显示 UDP sockets
+-a：显示所有 sockets（包括监听和非监听）
+-m：显示内存使用情况（包括缓冲区大小）
+-p：显示使用该 socket 的进程
+-n：以数字形式显示地址和端口（不解析域名）
+```
+skmem:(r0,rb212992,t0,tb212992,f0,w0,o0,bl0,d0) //默认208KB（212992 字节
+
+ss -uampn |grep xxx -A 1
+ESTAB    0         0             192.168.x.x:43672       192.168.4.xx:12347    users:(("mvnet_smem",pid=15275,fd=9))
+	 skmem:(r0,rb4194304,t0,tb4194304,f4096,w0,o0,bl0,d0)
+
+
+查看具体udp socket 统计信息？
+netstat -su //查看系统udp 统计信息
+cat /proc/net/udp
