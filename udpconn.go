@@ -70,9 +70,10 @@ type UDPConn struct {
 	check checkTimeout
 }
 type checkTimeout struct {
-	lastRxPkts   int64
-	lastAliveAt  time.Time
-	timeoutCount int
+	lastRxPkts     int64
+	lastRxDropPkts int64
+	lastAliveAt    time.Time
+	timeoutCount   int
 }
 
 type UDPConnOpt func(*UDPConn)

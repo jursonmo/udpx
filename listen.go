@@ -634,6 +634,10 @@ func (ln *UdpListen) checkExpire() error {
 				ccs := l.ListClientConns()
 				l.updateClientExpire(len(ccs))
 				for _, c := range ccs {
+					if c.rxDropPkts > c.check.lastRxDropPkts {
+						c.check.lastRxDropPkts = c.rxDropPkts
+						ln.logger.Warnf("conn:%v, lastRxDropPkts:%d, rxDropPkts:%d\n", c, c.check.lastRxDropPkts, c.rxDropPkts)
+					}
 					if c.check.lastRxPkts != c.rxPackets || c.check.lastAliveAt.IsZero() {
 						c.check.lastRxPkts = c.rxPackets
 						c.check.timeoutCount = 0 //reset
