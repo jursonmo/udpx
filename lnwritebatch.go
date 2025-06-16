@@ -247,7 +247,12 @@ func (bw *PCBufioWriter) Flush() error {
 
 func (w *writeBatchMsg) init(capability int) {
 	w.offset = 0
-	w.wms = make([]ipv4.Message, 0, capability)
+	w.wms = make([]ipv4.Message, capability)
+	for i := 0; i < capability; i++ {
+		w.wms[i].Buffers = make([][]byte, 1)
+	}
+	w.wms = w.wms[:0]
+
 	w.buffers = make([]MyBuffer, 0, capability)
 }
 
@@ -257,8 +262,19 @@ func (w *writeBatchMsg) buffered() int {
 }
 
 func (w *writeBatchMsg) addMsg(b MyBuffer) (flush bool) {
-	ms := ipv4.Message{Buffers: [][]byte{b.Bytes()}, Addr: b.GetAddr()}
-	w.wms = append(w.wms, ms)
+	// ms := ipv4.Message{Buffers: [][]byte{b.Bytes()}, Addr: b.GetAddr()} //给Buffers赋值的这种方式产生很多小对象，频繁触发gc
+	// w.wms = append(w.wms, ms)
+	//w.buffers = append(w.buffers, b)
+
+	if len(w.wms) == cap(w.wms) {
+		//添加数据是, batch不可能是满的。
+		panic(fmt.Errorf("len(w.wms) =%d, cap(w.wms):%d", len(w.wms), cap(w.wms)))
+	}
+	i := len(w.wms)
+	w.wms = w.wms[:i+1]
+	w.wms[i].Buffers[0] = b.Bytes()
+	w.wms[i].Addr = b.GetAddr()
+
 	w.buffers = append(w.buffers, b)
 	return len(w.wms) == cap(w.wms)
 }
@@ -276,6 +292,7 @@ func (w *writeBatchMsg) commit(sended int) {
 	for i := w.offset; i < w.offset+sended; i++ {
 		w.wms[i].Buffers[0] = nil //set nil for gc
 		Release(w.buffers[i])     //release buffer to pool
+		w.buffers[i] = nil
 	}
 
 	//update offset

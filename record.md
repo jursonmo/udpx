@@ -28,7 +28,7 @@ TODO:
 + 1. udpx client send msg and  put to udpx client udpConn's txqueue , 这里可以阻塞,应该阻塞,除非设置非阻塞, 或超时时间, 非阻塞返回ErrChannelFull, 超时返回ErrTimeout. 这样上层协议就可以控制发送速度了.(done: 2025-05-28晚上10; 默认发送是阻塞的。)
 + 2. 同理， server udpConn Write() --> put to it's listener txqueue, 这里也应该阻塞。(done: 2025-05-28晚上10; 默认发送是阻塞的。)
 
-TODO: udpx socket 缓冲区大小(Done at 2025-06-14晚上10)，以及 udp 相关信息，比如丢包等(Done at 2025-06-15)。
+13. TODO: udpx socket 缓冲区大小(Done at 2025-06-14晚上10)，以及 udp 相关信息，比如丢包等(Done at 2025-06-15)。
 ```
  cat /proc/sys/net/core/rmem_default  // sysctl net.core.rmem_default
  cat /proc/sys/net/core/wmem_default  // sysctl net.core.wmem_default
@@ -60,3 +60,6 @@ ESTAB    0         0             192.168.x.x:43672       192.168.4.xx:12347    u
 查看具体udp socket 统计信息？
 netstat -su //查看系统udp 统计信息
 cat /proc/net/udp
+
+14. iperf 发送方 的pprof heap type alloc_objects 显示(*writeBatchMsg).addMsg() 分配很多对象（Done)
+15. TODO: iperf接收端 gc 次数依然很多
