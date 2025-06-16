@@ -216,9 +216,17 @@ func (bw *PCBufioWriter) Flush() error {
 		return bw.err
 	}
 
+	//用于检查是否发送完所有数据
+	sended := 0
+	needToSend := bw.buffered()
+
 	for {
 		msgs := bw.msgBuffered()
 		if len(msgs) == 0 {
+			//已经发完了，检查下
+			if sended != needToSend {
+				log.Panicf("sended:%d, needToSend:%d", sended, needToSend)
+			}
 			return nil
 		}
 		n, err := bw.pc.WriteBatch(msgs, 0) //如果不是linux 平台，会报错：sendmsg invaild parameter
@@ -230,6 +238,8 @@ func (bw *PCBufioWriter) Flush() error {
 		// if n != len(msgs) {
 		// 	log.Printf("-------n:%d, len(msgs):%d--------\n", n, len(msgs))
 		// }
+
+		sended += n
 
 		bw.commit(n)
 	}
