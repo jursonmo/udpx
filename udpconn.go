@@ -139,7 +139,7 @@ func (uc *UDPConn) SetTxBlocked(b bool) {
 
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
 	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1), txBlocked: txqueueBlocked,
-		rxqueuelen:  512,
+		rxqueuelen:  1024, //接收的队列可以适当大一点, 避免突发流量丢包, 特别是ln 批量读数据后，put 到指定UDPConn的rxqueue 时是非阻塞的。
 		txqueuelen:  512,
 		readBatchs:  defaultBatchs,
 		writeBatchs: defaultBatchs,
