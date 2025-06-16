@@ -30,8 +30,8 @@ TODO:
 
 TODO: udpx socket 缓冲区大小(Done at 2025-06-14晚上10)，以及 udp 相关信息，比如丢包等(Done at 2025-06-15)。
 ```
- cat /proc/sys/net/core/rmem_default
- cat /proc/sys/net/core/wmem_default
+ cat /proc/sys/net/core/rmem_default  // sysctl net.core.rmem_default
+ cat /proc/sys/net/core/wmem_default  // sysctl net.core.wmem_default
  cat /proc/sys/net/core/rmem_max
  cat /proc/sys/net/core/wmem_max
  cat /proc/sys/net/ipv4/udp_mem
