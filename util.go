@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 )
 
 type AddrKey struct {
@@ -36,13 +39,47 @@ func setSocketBuf(conn *net.UDPConn, bufSize int) error {
 	// echo "12000000" > /proc/sys/net/core/wmem_max //最大12MB
 	// echo "12000000" > /proc/sys/net/core/rmem_max
 
-	err := conn.SetReadBuffer(bufSize)
-	if err != nil {
-		return err
+	rmemDefault, _ := getRmemDefault()
+	//如果比默认值大，才设置。 如果系统的rmem默认值比较大,就不用设置，以默认值为准
+	if bufSize > rmemDefault {
+		err := conn.SetReadBuffer(bufSize)
+		if err != nil {
+			return err
+		}
 	}
-	err = conn.SetWriteBuffer(bufSize)
-	if err != nil {
-		return err
+
+	wmemDefault, _ := getWmemDefault()
+	//如果比默认值大，才设置。 如果系统的wmem默认值比较大,就不用设置，以默认值为准
+	if bufSize > wmemDefault {
+		err := conn.SetWriteBuffer(bufSize)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func getWmemDefault() (int, error) {
+	return getMemDefault("/proc/sys/net/core/wmem_default")
+}
+
+func getRmemDefault() (int, error) {
+	return getMemDefault("/proc/sys/net/core/rmem_default")
+}
+
+func getMemDefault(filePath string) (int, error) {
+	// 读取文件内容
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0, err
+	}
+
+	// 去除空白字符并转换为整数
+	valueStr := strings.TrimSpace(string(data))
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return 0, err
+	}
+
+	return value, nil
 }
