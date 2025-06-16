@@ -62,4 +62,9 @@ netstat -su //查看系统udp 统计信息
 cat /proc/net/udp
 
 14. iperf 发送方 的pprof heap type alloc_objects 显示(*writeBatchMsg).addMsg() 分配很多对象（Done)
+  curl http://127.0.0.1:6061/debug/pprof/heap?seconds=5 > heap.out
+  下载heap.out到本地
+  go tool pprof -http=:9998 heap.out, 如果本地安装了graphviz, 会自动打开浏览器，点击：
+  SAMPLE-->alloc_objects, 
+  再点击VIEW -->flame Graph火焰图, 可以查看addMsg() 分配很多对象
 15. TODO: iperf接收端 gc 次数依然很多
