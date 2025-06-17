@@ -291,7 +291,8 @@ func (w *writeBatchMsg) commit(sended int) {
 	//已经发送的消息，可以释放
 	for i := w.offset; i < w.offset+sended; i++ {
 		w.wms[i].Buffers[0] = nil //set nil for gc
-		Release(w.buffers[i])     //release buffer to pool
+		w.wms[i].Addr = nil
+		Release(w.buffers[i]) //release buffer to pool
 		w.buffers[i] = nil
 	}
 
