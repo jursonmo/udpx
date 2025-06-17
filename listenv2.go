@@ -13,6 +13,9 @@ func (l *Listener) readBatchLoopv2() error {
 	var err error
 	InitPool(l.maxPacketSize)
 	rms := make([]ipv4.Message, l.batchs)
+	for i := 0; i < l.batchs; i++ {
+		rms[i].Buffers = make([][]byte, 1) //提前分配好rms[i].Buffers[0], 避免接收数据时每次都分配,导致产生很多小对象
+	}
 	buffers := make([]MyBuffer, l.batchs)
 	n := len(rms)
 	l.logger.Infof("%v, started with readLoopv2(use MyBuffer)....\n", l)
@@ -21,7 +24,9 @@ func (l *Listener) readBatchLoopv2() error {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)
 			buffers[i] = b
-			rms[i] = ipv4.Message{Buffers: [][]byte{b.Buffer()}, Addr: nil}
+			//rms[i] = ipv4.Message{Buffers: [][]byte{b.Buffer()}, Addr: nil} //这种方式赋值Buffers,会产生很多小对象，造成频繁gc
+			rms[i].Buffers[0] = b.Buffer()
+			rms[i].Addr = nil
 		}
 		n, err = l.pc.ReadBatch(rms, 0)
 		if err != nil {
