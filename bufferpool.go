@@ -2,15 +2,25 @@ package udpx
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 type MyBufferPool interface {
 	Get(int) MyBuffer
 	Put(MyBuffer)
+	Show() string
+}
+
+func ShowMyBufferPool() string {
+	if defaultBufferPool == nil {
+		return "defaultBufferPool == nil"
+	}
+	return defaultBufferPool.Show()
 }
 
 var defaultBufferPool MyBufferPool
@@ -33,9 +43,14 @@ type MyBuffer interface {
 	Advance(int) //instead of AddLen(int)
 	SetAddr(net.Addr)
 	GetAddr() net.Addr
+	Hold()
+	Release() int32
+	Reference() int32
+	Reset()
 }
 
 type Buffer struct {
+	ref     int32
 	woffset int //write offset
 	roffset int //read offset
 	addr    net.Addr
@@ -43,29 +58,45 @@ type Buffer struct {
 }
 
 type pool struct {
-	maxBufferSize int
 	sync.Pool
+	maxBufferSize int
+	newAlloc      int64
+	alloc         int64
+	putback       int64
 }
 
 func (p *pool) Get(n int) MyBuffer {
 	if n > p.maxBufferSize {
+		log.Panicf("n:%d > p.maxBufferSize:%d", n, p.maxBufferSize)
 		return nil
 	}
 	b := p.Pool.Get().(*Buffer)
-	b.Reset()
+	atomic.AddInt64(&p.alloc, 1)
 
+	b.Check()
+	b.Hold()
 	return b
 }
 
 func (p *pool) Put(b MyBuffer) {
+	if b.Release() != 0 {
+		log.Panicf("b.Release()!= 0")
+	}
+	b.Reset()
+	atomic.AddInt64(&p.putback, 1)
 	p.Pool.Put(b)
+}
+
+func (p *pool) Show() string {
+	return fmt.Sprintf("newAlloc:%d, alloc:%d, putback:%d", atomic.LoadInt64(&p.newAlloc), atomic.LoadInt64(&p.alloc), atomic.LoadInt64(&p.putback))
 }
 
 var initPoolOnce sync.Once
 
 func InitPool(maxBufferSize int) {
 	initPoolOnce.Do(func() {
-		p := &pool{maxBufferSize: maxBufferSize, Pool: sync.Pool{New: func() interface{} { return &Buffer{buf: make([]byte, maxBufferSize)} }}}
+		p := &pool{maxBufferSize: maxBufferSize}
+		p.Pool = sync.Pool{New: func() interface{} { atomic.AddInt64(&p.newAlloc, 1); return &Buffer{buf: make([]byte, maxBufferSize)} }}
 		SetDefaultBufferPool(p)
 	})
 }
@@ -120,4 +151,25 @@ func (b *Buffer) Reset() {
 	b.woffset = 0
 	b.roffset = 0
 	b.addr = nil
+}
+
+func (b *Buffer) Reference() int32 {
+	return atomic.LoadInt32(&b.ref)
+}
+
+func (b *Buffer) Hold() {
+	atomic.AddInt32(&b.ref, 1)
+}
+
+func (b *Buffer) Release() int32 {
+	return atomic.AddInt32(&b.ref, -1)
+}
+
+func (b *Buffer) Check() {
+	if b.Reference() != 0 {
+		log.Panicf("b.ref:%d != 0", b.ref)
+	}
+	if b.woffset != 0 || b.roffset != 0 || b.addr != nil {
+		log.Panicf("b.woffset:%d, b.roffset:%d, b.addr:%v", b.woffset, b.roffset, b.addr)
+	}
 }

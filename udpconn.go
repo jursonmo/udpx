@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-var ErrConnClosed = errors.New("Conn Closed")
+var ErrConnClosed = errors.New("conn closed")
 
 const (
 	magicSize = 4
@@ -41,8 +41,12 @@ type UDPConn struct {
 	undrainedBufferMux  sync.Mutex
 	lastUndrainedBuffer MyBuffer //在不要求一次性MyBuffer的内容的时候，没读完的就放在lastUndrainedBuffer 里
 
+	txBlocked   bool //发送时，是否会阻塞, 默认为true, 即阻塞
 	txqueue     chan MyBuffer
 	txqueuelen  int
+	txPackets   int64
+	txDropPkts  int64
+	txDropBytes int64
 	rxqueue     chan MyBuffer
 	rxqueueB    chan []byte
 	rxhandler   func([]byte)
@@ -66,9 +70,10 @@ type UDPConn struct {
 	check checkTimeout
 }
 type checkTimeout struct {
-	lastRxPkts   int64
-	lastAliveAt  time.Time
-	timeoutCount int
+	lastRxPkts     int64
+	lastRxDropPkts int64
+	lastAliveAt    time.Time
+	timeoutCount   int
 }
 
 type UDPConnOpt func(*UDPConn)
@@ -121,9 +126,20 @@ func WithOneshotRead(b bool) UDPConnOpt {
 	}
 }
 
+func WithTxBlocked(b bool) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.txBlocked = b
+	}
+}
+
+// listener accept 得到 udpc conn 后, 不想跟listener 的txBlocked 属性一样，可以设置此接口来设置发送时是否可以阻塞。默认是true,是阻塞的。
+func (uc *UDPConn) SetTxBlocked(b bool) {
+	uc.txBlocked = b
+}
+
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
-	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1),
-		rxqueuelen:  512,
+	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1), txBlocked: txqueueBlocked,
+		rxqueuelen:  1024, //接收的队列可以适当大一点, 避免突发流量丢包, 特别是ln 批量读数据后，put 到指定UDPConn的rxqueue 时是非阻塞的。
 		txqueuelen:  512,
 		readBatchs:  defaultBatchs,
 		writeBatchs: defaultBatchs,
@@ -149,6 +165,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 		// log.Printf("magic:%v\n", uc.magic)
 		uc.magic = fixedMagic
 	}
+	gLogger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
 
@@ -226,7 +243,7 @@ func (c *UDPConn) Close() error {
 	if c.client && c.lconn != nil {
 		c.lconn.Close()
 	}
-	log.Printf("client:%v, %s<->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
+	log.Printf("udpx client:%v, %s->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
 	return nil
 }
 
@@ -241,7 +258,7 @@ func (c *UDPConn) RemoteAddr() net.Addr {
 // 如果业务层用了bufio, 这里这次copy是copy 到 bufio 的buf 里，再等待业务层copy
 // 也就是三次copy 操作。比正常的操作多一次copy
 // var oneShot = true
-var shortReadErr = errors.New("short Read error, Read(buf) should parameters buf len is small than udp packet")
+var ErrShortRead = errors.New("short Read error, Read(buf) should parameters buf len is small than udp packet")
 
 func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	//客户端读模式，又不启用batch, 就一个个读
@@ -287,8 +304,8 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 		if c.oneshotRead {
 			n, err = b.Read(buf)
 			remain := len(b.Bytes())
-			if err == nil && remain > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回shortReadErr
-				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, remain:%d, %w", user_buf_len, n, remain, shortReadErr)
+			if err == nil && remain > 0 { //要求一次性读完MyBuffer 的内容，但是没读完，返回ErrShortRead
+				err = fmt.Errorf("user_buf_len:%d, have copyed:%d, remain:%d, %w", user_buf_len, n, remain, ErrShortRead)
 			}
 			Release(b) //fixbug:放在这里释放MyBuffer, 不能放在读取len(b.Bytes())前。
 			return
@@ -322,7 +339,13 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 		if c.writeBatchs > 0 {
 			return c.WriteWithBatch(b)
 		}
-		return c.lconn.Write(b)
+		n, err = c.lconn.Write(b)
+		if err != nil {
+			c.txDropPkts++
+		} else {
+			c.txPackets++
+		}
+		return
 	}
 
 	//the conn that accepted by listener
@@ -333,7 +356,15 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 	if c.ln.WriteBatchAble() {
 		return c.WriteWithBatch(b)
 	}
-	return c.lconn.WriteTo(b, c.raddr)
+	n, err = c.lconn.WriteTo(b, c.raddr)
+	if err != nil {
+		c.txDropPkts++
+		c.ln.txDropPkts++
+	} else {
+		c.txPackets++
+		c.ln.txPackets++
+	}
+	return
 }
 
 func (c *UDPConn) writeBatchLoop() {
@@ -343,13 +374,24 @@ func (c *UDPConn) writeBatchLoop() {
 }
 
 // 返回的error 应该实现net.Error temporary(), 这样上层Write可以认为Eagain,再次调用Write
-func (c *UDPConn) PutTxQueue(b MyBuffer) error {
+func (c *UDPConn) PutTxQueue(b MyBuffer, blocked bool) error {
 	if c.closed {
 		return ErrConnClosed
 	}
+
+	if blocked {
+		c.txqueue <- b
+		c.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
+		return nil
+	}
+
+	//non-blocked
 	select {
 	case c.txqueue <- b:
+		c.txPackets++ //统计发送的包数,但是不是很严谨,因为这不能代表已经发送出去了。
 	default:
+		c.txDropPkts++
+		//c.txDropBytes += int64(len(b.Bytes()))
 		Release(b)
 		return ErrTxQueueFull
 	}
@@ -357,10 +399,15 @@ func (c *UDPConn) PutTxQueue(b MyBuffer) error {
 }
 
 func (c *UDPConn) String() string {
-	return fmt.Sprintf("isClient:%v, raddr:%v, oneshotRead:%v,rwbatch(%d,%d)", c.client, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs)
+	var lnString = "ln is nil"
+	if c.ln != nil {
+		lnString = fmt.Sprintf("listener id:%v", c.ln.id)
+	}
+	return fmt.Sprintf("isClient:%v, %s, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		c.client, lnString, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
 }
 
-// 重新对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
+// 重写对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
 // 不然提示json: error calling MarshalJSON for type *udpx.UDPConn: invalid character '.' after object key:value pair
 func (c *UDPConn) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`{"isClient": %v,"raddr": "%s"}`, c.client, c.raddr.String())), nil

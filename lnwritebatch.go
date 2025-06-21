@@ -18,7 +18,8 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 	b := GetMyBuffer(len(data))
 	if b == nil {
 		//data too bigger?
-		return 0, pkgerr.WithMessagef(ErrTooBig, "GetMyBuffer fail for data len:%d", len(data))
+		panic(fmt.Errorf("GetMyBuffer fail for data len:%d", len(data)))
+		//return 0, pkgerr.WithMessagef(ErrTooBig, "GetMyBuffer fail for data len:%d", len(data))
 	}
 	n, err = b.Write(data)
 	if err != nil {
@@ -26,12 +27,21 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 		err = fmt.Errorf("put data in buffer fail, err:%w", err)
 		return
 	}
+	if n != len(data) {
+		panic(fmt.Errorf("n:%d, len(data):%d", n, len(data)))
+	}
 
 	if c.ln != nil {
 		b.SetAddr(c.raddr)
-		err = c.ln.PutTxQueue(b)
+		err = c.ln.PutTxQueue(b, c.txBlocked)
+		if err != nil {
+			c.txDropPkts++
+		} else {
+			c.txPackets++
+		}
 	} else {
-		err = c.PutTxQueue(b)
+		//b.SetAddr(c.raddr) // ?? pc write 时，底层net.UDPConn 已经通过DialUDP() bind raddr ?
+		err = c.PutTxQueue(b, c.txBlocked)
 	}
 	if err != nil {
 		return 0, err
@@ -40,10 +50,24 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 }
 
 // 返回的error 应该实现net.Error temporary(), 这样上层Write可以认为Eagain,再次调用Write
-func (l *Listener) PutTxQueue(b MyBuffer) error {
+func (l *Listener) PutTxQueue(b MyBuffer, blocked bool) error {
+	if blocked {
+		l.txqueue <- b
+		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
+		return nil
+	}
+
+	//non-blocked
 	select {
 	case l.txqueue <- b:
+		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
 	default:
+		l.txDropPkts++
+		//l.txDropBytes += int64(len(b.Bytes()))
+		if l.txDropPkts&127 == 0 {
+			//panic(fmt.Errorf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts))
+			l.logger.Warnf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts)
+		}
 		Release(b)
 		return ErrTxQueueFull
 	}
@@ -192,9 +216,17 @@ func (bw *PCBufioWriter) Flush() error {
 		return bw.err
 	}
 
+	//用于检查是否发送完所有数据
+	sended := 0
+	needToSend := bw.buffered()
+
 	for {
 		msgs := bw.msgBuffered()
 		if len(msgs) == 0 {
+			//已经发完了，检查下
+			if sended != needToSend {
+				log.Panicf("sended:%d, needToSend:%d", sended, needToSend)
+			}
 			return nil
 		}
 		n, err := bw.pc.WriteBatch(msgs, 0) //如果不是linux 平台，会报错：sendmsg invaild parameter
@@ -202,13 +234,25 @@ func (bw *PCBufioWriter) Flush() error {
 			bw.err = err
 			return err
 		}
+		// 流量大的时候,经常出现一次write 系统调用没能发送完，导致n<len(msgs)
+		// if n != len(msgs) {
+		// 	log.Printf("-------n:%d, len(msgs):%d--------\n", n, len(msgs))
+		// }
+
+		sended += n
+
 		bw.commit(n)
 	}
 }
 
 func (w *writeBatchMsg) init(capability int) {
 	w.offset = 0
-	w.wms = make([]ipv4.Message, 0, capability)
+	w.wms = make([]ipv4.Message, capability)
+	for i := 0; i < capability; i++ {
+		w.wms[i].Buffers = make([][]byte, 1)
+	}
+	w.wms = w.wms[:0]
+
 	w.buffers = make([]MyBuffer, 0, capability)
 }
 
@@ -218,8 +262,19 @@ func (w *writeBatchMsg) buffered() int {
 }
 
 func (w *writeBatchMsg) addMsg(b MyBuffer) (flush bool) {
-	ms := ipv4.Message{Buffers: [][]byte{b.Bytes()}, Addr: b.GetAddr()}
-	w.wms = append(w.wms, ms)
+	// ms := ipv4.Message{Buffers: [][]byte{b.Bytes()}, Addr: b.GetAddr()} //给Buffers赋值的这种方式产生很多小对象，频繁触发gc
+	// w.wms = append(w.wms, ms)
+	//w.buffers = append(w.buffers, b)
+
+	if len(w.wms) == cap(w.wms) {
+		//添加数据是, batch不可能是满的。
+		panic(fmt.Errorf("len(w.wms) =%d, cap(w.wms):%d", len(w.wms), cap(w.wms)))
+	}
+	i := len(w.wms)
+	w.wms = w.wms[:i+1]
+	w.wms[i].Buffers[0] = b.Bytes()
+	w.wms[i].Addr = b.GetAddr()
+
 	w.buffers = append(w.buffers, b)
 	return len(w.wms) == cap(w.wms)
 }
@@ -236,7 +291,9 @@ func (w *writeBatchMsg) commit(sended int) {
 	//已经发送的消息，可以释放
 	for i := w.offset; i < w.offset+sended; i++ {
 		w.wms[i].Buffers[0] = nil //set nil for gc
-		Release(w.buffers[i])     //release buffer to pool
+		w.wms[i].Addr = nil
+		Release(w.buffers[i]) //release buffer to pool
+		w.buffers[i] = nil
 	}
 
 	//update offset

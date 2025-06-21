@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -36,32 +37,32 @@ type LnCfgOptions func(*ListenConfig)
 
 func WithReuseport(b bool) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.reuseport = true
+		lc.Reuseport = true
 	}
 }
 
 func WithListenerNum(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.listenerNum = n
+		lc.ListenerNum = n
 	}
 }
 
 // 如果不用batchs 读写, 设置成 0
 func Batchs(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.batchs = n
+		lc.Batchs = n
 	}
 }
 
 func MaxPacketSize(n int) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.maxPacketSize = n
+		lc.MaxPacketSize = n
 	}
 }
 
 func OneShotRead(b bool) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.oneshotRead = b
+		lc.OneshotRead = b
 	}
 }
 
@@ -75,11 +76,12 @@ type ListenConfig struct {
 	network string
 	addr    string
 	//raddr     string
-	reuseport     bool //如果没有指定listenerNum，且reuseport =true,那么就GOPROCESS来作为listenerNum
-	listenerNum   int
-	batchs        int //one
-	maxPacketSize int
-	oneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
+	Reuseport     bool //如果没有指定listenerNum，且reuseport =true,那么就GOPROCESS来作为listenerNum
+	ListenerNum   int
+	Batchs        int  //one
+	TxBlocked     bool //默认为true, 默认阻塞模式
+	MaxPacketSize int
+	OneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
 	logger        Logger
 }
 
@@ -96,11 +98,43 @@ type UdpListen struct {
 }
 
 func (l *UdpListen) String() string {
-	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v, oneshotRead:%v", l.cfg.listenerNum, l.Addr(), l.cfg.reuseport, l.cfg.oneshotRead)
+	return fmt.Sprintf("udp leader listener, listeners:%d, local:%s, reuseport:%v, oneshotRead:%v", l.cfg.ListenerNum, l.Addr(), l.cfg.Reuseport, l.cfg.OneshotRead)
+}
+
+func DefaultLnConfig() ListenConfig {
+	return ListenConfig{
+		Reuseport:     true,
+		MaxPacketSize: defaultMaxPacketSize,
+		Batchs:        defaultBatchs,
+		TxBlocked:     true,
+		OneshotRead:   true,
+		logger:        StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())},
+	}
+}
+
+// priority: defaultConfig < configPath < opts
+func LoadLnConfig(configPath string) (ListenConfig, error) {
+	cfg := DefaultLnConfig()
+	if configPath == "" {
+		return cfg, nil
+	}
+	file, err := os.ReadFile(configPath)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to read config file: %v", err)
+	}
+	err = json.Unmarshal(file, &cfg)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to unmarshal config file: %v", err)
+	}
+	return cfg, nil
 }
 
 func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOptions) (*UdpListen, error) {
-	cfg := ListenConfig{network: network, addr: addr, batchs: defaultBatchs, oneshotRead: true, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
+	//cfg := ListenConfig{network: network, addr: addr, Batchs: defaultBatchs, OneshotRead: true, logger: StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}}
+	cfg, _ := LoadLnConfig("./udpxlnconfig.json")
+	cfg.network = network
+	cfg.addr = addr
+
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -132,10 +166,11 @@ func (ln *UdpListen) Start() error {
 		return pkgerr.Wrapf(err, "ResolveUDPAddr %s://%s fail", cfg.network, cfg.addr)
 	}
 	ln.laddr = laddr
-	ln.listeners = make([]*Listener, cfg.listenerNum)
-	for i := 0; i < cfg.listenerNum; i++ {
+	ln.listeners = make([]*Listener, cfg.ListenerNum)
+	for i := 0; i < cfg.ListenerNum; i++ {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
-			WithId(i), WithLnBatchs(cfg.batchs), WithLnMaxPacketSize(cfg.maxPacketSize), WithLogger(ln.logger), LnWithOneshotRead(cfg.oneshotRead))
+			WithId(i), WithLnBatchs(cfg.Batchs), WithLnMaxPacketSize(cfg.MaxPacketSize),
+			WithLogger(ln.logger), LnWithOneshotRead(cfg.OneshotRead), LnWithTxBlocked(cfg.TxBlocked))
 		if err != nil {
 			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
@@ -152,20 +187,20 @@ func (cfg *ListenConfig) Tidy() error {
 	}
 
 	//如果没有设置listener 的数量, 那么如果开启reuseport,就按cpu的个数来，否则就认为没有开口reuseport，即listner 数量只有一个
-	if cfg.listenerNum == 0 {
-		if cfg.reuseport {
-			cfg.listenerNum = runtime.GOMAXPROCS(0)
+	if cfg.ListenerNum == 0 {
+		if cfg.Reuseport {
+			cfg.ListenerNum = runtime.GOMAXPROCS(0)
 		} else {
-			cfg.listenerNum = 1
+			cfg.ListenerNum = 1
 		}
 	}
 
-	if cfg.listenerNum <= 0 {
+	if cfg.ListenerNum <= 0 {
 		log.Panicln("invaild, listenerNum <= 0")
 	}
 
-	if cfg.maxPacketSize == 0 {
-		cfg.maxPacketSize = defaultMaxPacketSize
+	if cfg.MaxPacketSize == 0 {
+		cfg.MaxPacketSize = defaultMaxPacketSize
 	}
 
 	return nil
@@ -185,6 +220,7 @@ func (ln *UdpListen) Listen() {
 					ln.logger.Errorf("%v Accept() err:%s and quit", l, err)
 					return
 				}
+				ln.logger.Infof("%v accept conn:%v", l.ShortString(), conn)
 				ln.accept <- conn
 			}
 		}(l)
@@ -246,11 +282,18 @@ type Listener struct {
 	pc     *ipv4.PacketConn
 	mode   int
 	//ln      net.Listener
-	clients        sync.Map
-	expire         time.Duration //client expire ,根据clients的数量
-	clientCount    int64
-	accept         chan *UDPConn
-	txqueue        chan MyBuffer
+	clients     sync.Map
+	expire      time.Duration //client expire ,根据clients的数量
+	clientCount int64
+	accept      chan *UDPConn
+	txBlocked   bool //默认为true; 批量发送时，会用到txqueue, 写到txqueue是否阻塞; accept所产生的UdpConn默认都以其listener的txBlocked来决定是否阻塞发送。但是可以通过UdpConn的SetTxBlocked()来改变。
+	txqueue     chan MyBuffer
+	txPackets   int64 //统计发送的包数,是所有属于它所accept的UdpConn的发送的包数总和
+	txDropPkts  int64
+	rxPackets   int64
+	rxDropPkts  int64
+	//txDropBytes    int64
+
 	writeBatchAble bool // write batch is enable?
 	batchs         int
 	maxPacketSize  int
@@ -296,8 +339,14 @@ func LnWithOneshotRead(b bool) ListenerOpt {
 	}
 }
 
+func LnWithTxBlocked(b bool) ListenerOpt {
+	return func(l *Listener) {
+		l.txBlocked = b
+	}
+}
+
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -311,6 +360,19 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			}); err != nil {
 				return err
 			}
+
+			// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_RCVBUF, 1024*1024*5)
+			// }); err != nil {
+			// 	return err
+			// }
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_SNDBUF, 1024*1024*5)
+			// }); err != nil {
+			// 	return err
+			// }
+
 			return opErr
 		},
 	}
@@ -320,6 +382,11 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 		return nil, pkgerr.WithStack(err)
 	}
 	l.lconn = conn.(*net.UDPConn)
+	err = setSocketBuf(l.lconn, 1024*1024*5)
+	if err != nil {
+		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+	}
+
 	l.pc = ipv4.NewPacketConn(conn)
 
 	if l.batchs > 0 {
@@ -406,7 +473,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		}
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
-		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead))
+		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 		n := copy(uc.magic[:], data)
 		if n != magicSize {
 			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
@@ -434,7 +501,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 }
 
 func (l *Listener) deleteConn(key AddrKey /*interface{}*/) error {
-	l.logger.Errorf("id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
+	l.logger.Errorf("ln id:%d, del: %s, local:%s, remote: %v", l.id, l.LocalAddr().Network(), l.LocalAddr().String(), key)
 	_, exist := l.clients.LoadAndDelete(key)
 	if !exist {
 		//暂时用panic 来确保业务层对同一个conn 删除两次时，我可以看出来
@@ -499,8 +566,11 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) String() string {
-	return fmt.Sprintf("listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s",
-		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String())
+	return fmt.Sprintf("udpx listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts, l.txBlocked)
+}
+func (l *Listener) ShortString() string {
+	return fmt.Sprintf("udpx listener, id:%d, local:%s://%s", l.id, l.LocalAddr().Network(), l.LocalAddr().String())
 }
 
 func (l *Listener) ListClientConns() []*UDPConn {
@@ -564,6 +634,10 @@ func (ln *UdpListen) checkExpire() error {
 				ccs := l.ListClientConns()
 				l.updateClientExpire(len(ccs))
 				for _, c := range ccs {
+					if c.rxDropPkts > c.check.lastRxDropPkts {
+						c.check.lastRxDropPkts = c.rxDropPkts
+						ln.logger.Warnf("conn:%v, lastRxDropPkts:%d, rxDropPkts:%d\n", c, c.check.lastRxDropPkts, c.rxDropPkts)
+					}
 					if c.check.lastRxPkts != c.rxPackets || c.check.lastAliveAt.IsZero() {
 						c.check.lastRxPkts = c.rxPackets
 						c.check.timeoutCount = 0 //reset
