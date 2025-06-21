@@ -288,6 +288,7 @@ type Listener struct {
 	accept      chan *UDPConn
 	txBlocked   bool //默认为true; 批量发送时，会用到txqueue, 写到txqueue是否阻塞; accept所产生的UdpConn默认都以其listener的txBlocked来决定是否阻塞发送。但是可以通过UdpConn的SetTxBlocked()来改变。
 	txqueue     chan MyBuffer
+	txqueuelen  int
 	txPackets   int64 //统计发送的包数,是所有属于它所accept的UdpConn的发送的包数总和
 	txDropPkts  int64
 	rxPackets   int64
@@ -346,7 +347,7 @@ func LnWithTxBlocked(b bool) ListenerOpt {
 }
 
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen}
 	for _, opt := range opts {
 		opt(l)
 	}

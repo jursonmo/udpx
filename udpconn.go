@@ -370,6 +370,9 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 func (c *UDPConn) writeBatchLoop() {
 	defer log.Printf("client %v, writeBatchLoop quit", c.pc.LocalAddr())
 	bw, _ := NewPCBioWriter(c.pc, c.writeBatchs)
+	if c.txqueue == nil {
+		c.txqueue = make(chan MyBuffer, c.txqueuelen)
+	}
 	bw.WriteBatchLoop(c.txqueue)
 }
 

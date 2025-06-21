@@ -85,6 +85,10 @@ func (l *Listener) writeBatchLoop() (err error) {
 	l.logger.Infof("%v, writeBatchLoop started", l)
 	defer func() { l.logger.Errorf("%v, writeBatchLoop quit, err:%+v", l, err) }()
 
+	if l.txqueue == nil {
+		l.txqueue = make(chan MyBuffer, l.txqueuelen)
+	}
+
 	err = bw.WriteBatchLoop(l.txqueue)
 	return
 	/*
