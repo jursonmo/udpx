@@ -391,7 +391,6 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	l.pc = ipv4.NewPacketConn(conn)
 
 	if l.batchs > 0 {
-		l.txqueue = make(chan MyBuffer, 512)
 		go l.writeBatchLoop()
 		//go l.readBatchLoop()
 		go l.readBatchLoopv2() //use buffer pool
