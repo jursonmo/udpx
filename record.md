@@ -67,4 +67,7 @@ cat /proc/net/udp
   go tool pprof -http=:9998 heap.out, 如果本地安装了graphviz, 会自动打开浏览器，点击：
   SAMPLE-->alloc_objects, 
   再点击VIEW -->flame Graph火焰图, 可以查看addMsg() 分配很多对象
-15. TODO: iperf接收端 gc 次数依然很多
+  
+15. TODO: iperf接收端 gc 次数依然很多(Done: readBatchLoopv2()也减少内存对象的分配。 从火焰图上看,只剩下golang.org/x/net/internal/socket.parseInetAddr 分配的对象暂时没办法处理)(git 仓库:https://github.com/golang/net/)
+
+16. TODO: client 正在发送数据，服务端重启了，服务端接受到非magic包，是不创建udpConn的，这时client无法感知到，继续发数据，只能等心跳超时后自己断开，这样有点慢。服务端可以在尝试创建新的UDPConn时，如果发现不是magic 握手报文，可以回应一个关闭的控制报文，client 收到后，就知道服务端创建失败，就可以断开连接了。(Done: 经过测试，如果服务端程序退出了，client 在发送数据时，会收到错误 recvmmsg: connection refused，原因是服务端会回应icmp, client才感知到的，所以client 很快就重连了，重连成功后，为啥隧道为啥ping 不通，是因为服务端重启后，mvnet的mac地址变化了，但是client的arp缓存没有更新，所以ping 不同，arp -d 10.10.10.1 清空下缓存, 马上可以ping通，可以通过在tun.mac写死来解决。退一步，如果服务器重启非常快，即服务器的udp端口马上恢复到侦听的状态，那么client 是收不到错误 recvmmsg: connection refused, 等待超时再重连也可以接受。 还有一种可能，网络不通，client 也是收不到connection refused错误，等待重连也没有问题； 结论是暂时不去实现)
