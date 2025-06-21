@@ -403,8 +403,8 @@ func (c *UDPConn) String() string {
 	if c.ln != nil {
 		lnString = fmt.Sprintf("listener id:%v", c.ln.id)
 	}
-	return fmt.Sprintf("isClient:%v, %s, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
-		c.client, lnString, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
+	return fmt.Sprintf("isClient:%v, %s, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		c.client, lnString, c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
 }
 
 // 重写对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
