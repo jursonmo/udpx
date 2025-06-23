@@ -56,9 +56,11 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 		}
 		if c.writeBatchs > 0 {
 			//后台起一个goroutine 负责批量写，上层直接write 就行。
+			c.txqueue = make(chan MyBuffer, c.txqueuelen) //还是跟以前一样提前初始化, 确保发送数据时，txqueue是确定已经初始化好的。避免上层发送数据时丢失
 			go c.writeBatchLoop()
 		}
 	}
+	gLogger.Infof("ok, started udpconn:%v", c)
 	return c, nil
 }
 

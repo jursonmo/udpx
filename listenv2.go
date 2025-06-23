@@ -110,16 +110,13 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 	if !ok {
 		return
 	}
-	// network := l.lconn.LocalAddr().Network()
-	// if network != "udp" {
-	// 	panic("l.lconn.LocalAddr().Network() != udp")
-	// }
-	//lconn, err := net.ListenUDP(network, dstAddr)
+
 	l.logger.Infof("CreateUDPConnByNewDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
 	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
 	if err != nil {
 		panic(err)
 	}
+	//查看bind端口的情况: lsof -an -p $pid
 
 	//lconn, err := net.DialUDP(l.lconn.LocalAddr().Network(), dstAddr, raddr)
 	// if err != nil {
@@ -148,6 +145,7 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 	}
 	if uc.writeBatchs > 0 {
 		//后台起一个goroutine 负责批量写，上层直接write 就行。
+		uc.txqueue = make(chan MyBuffer, uc.txqueuelen)
 		go uc.writeBatchLoop()
 	}
 

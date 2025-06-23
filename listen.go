@@ -408,6 +408,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	l.pc = ipv4.NewPacketConn(conn)
 
 	if l.batchs > 0 {
+		l.txqueue = make(chan MyBuffer, l.txqueuelen) //还是跟以前一样提前初始化, 确保发送数据时，txqueue是确定已经初始化好的。
 		go l.writeBatchLoop()
 		//go l.readBatchLoop()
 		go l.readBatchLoopv2() //use buffer pool
