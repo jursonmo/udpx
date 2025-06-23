@@ -111,13 +111,6 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 		return
 	}
 
-	l.logger.Infof("CreateUDPConnByNewDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
-	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
-	if err != nil {
-		panic(err)
-	}
-	//查看bind端口的情况: lsof -an -p $pid
-
 	//lconn, err := net.DialUDP(l.lconn.LocalAddr().Network(), dstAddr, raddr)
 	// if err != nil {
 	// 	l.logger.Errorf("create new udp, DialUDP err:%v\n", err)
@@ -125,6 +118,13 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 	// 	//create new udp, DialUDP err:dial udp 192.168.x.x:12347-\u003e192.168.x.x:44122: bind: address already in use\n"
 	// 	return
 	// }
+
+	l.logger.Infof("CreateUDPConnByNewDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
+	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
+	if err != nil {
+		panic(err)
+	}
+	//查看bind端口的情况: lsof -an -p $pid
 
 	uc := NewUDPConn(nil, lconn, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 	n := copy(uc.magic[:], data)
@@ -236,10 +236,12 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 	}
 	conn, err := lc.ListenPacket(context.Background(), laddr.Network(), laddr.String())
 	if err != nil {
-		panic(err) //使用unix.Connect(), 这里会panic: listen udp 192.168.6.70:12347: bind: invalid argument
+		panic(err) //如果在上面的c.Control()里就调用unix.Connect(), 这里会panic: listen udp 192.168.6.70:12347: bind: invalid argument
 	}
 	uc := conn.(*net.UDPConn)
 
+	//想侦听再Connect()有个问题，这一瞬间如果有新的数据发送到这个处于侦听的conn，会出现啥异常情况？
+	//uc.Connect(raddr)
 	rawconn, err := uc.SyscallConn()
 	if err != nil {
 		panic(err)
