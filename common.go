@@ -10,3 +10,4 @@ var defaultMaxPacketSize = 1600
 
 var txqueueBlocked = true //全局默认值, 意思是批量发送时, 发送队列满了，是否阻塞
 var defaultTxQueueLen = 1024
+var IP_PKTINFO_ENABLE = true

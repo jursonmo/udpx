@@ -359,8 +359,16 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			if err := c.Control(func(fd uintptr) {
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 			}); err != nil {
+				panic(err)
 				return err
 			}
+
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			// }); err != nil {
+			// 	panic(err)
+			// 	return err
+			// }
 
 			// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
 			// if err := c.Control(func(fd uintptr) {
@@ -374,6 +382,15 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			// 	return err
 			// }
 
+			//设置IP_PKTINFO
+			if IP_PKTINFO_ENABLE {
+				if err := c.Control(func(fd uintptr) {
+					opErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
+				}); err != nil {
+					panic(err)
+					//return err
+				}
+			}
 			return opErr
 		},
 	}
