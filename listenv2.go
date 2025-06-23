@@ -38,6 +38,7 @@ func (l *Listener) readBatchLoopv2() error {
 	buffers := make([]MyBuffer, l.batchs)
 	n := len(rms)
 	laddr := l.lconn.LocalAddr().(*net.UDPAddr)
+	dstAddr := (*net.UDPAddr)(nil)
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0)
@@ -70,9 +71,9 @@ func (l *Listener) readBatchLoopv2() error {
 				panic("rms[i].Addr == nil")
 			}
 
-			dstAddr := (*net.UDPAddr)(nil)
+			dstAddr = nil
 			//如果开启了IP_PKTINFO,则需要从OOB中获取目的地址
-			if rms[i].NN > 0 {
+			if IP_PKTINFO_ENABLE && rms[i].NN > 0 {
 				dstAddr, err = parseDstAddrFromOOB(rms[i].OOB[:rms[i].NN], laddr.Port)
 				if err != nil {
 					l.logger.Errorf("parseDstAddrFromOOB err:%v\n", err)
@@ -87,7 +88,7 @@ func (l *Listener) readBatchLoopv2() error {
 
 func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer) {
 	if dstAddr != nil {
-		l.CreateUDPConnByNewDstAddr(dstAddr, addr, b.Bytes())
+		l.CreateUDPConnByDstAddr(dstAddr, addr, b.Bytes())
 		return
 	}
 	//只统计非ctrl数据的包数
@@ -103,7 +104,7 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 		}
 	}
 }
-func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, data []byte) {
+func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, data []byte) {
 	//如何获取到了数据报文的目的地址，可以直接创建新的UDPConn
 	raddr := addr.(*net.UDPAddr)
 	key, ok := udpAddrTrans(raddr)
@@ -115,11 +116,11 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 	// if err != nil {
 	// 	l.logger.Errorf("create new udp, DialUDP err:%v\n", err)
 	// 	//因为listener已经侦听了12347端口，所以不能再bind 12347端口?为啥，其实可以允许绑定的，这样内核收到数据后，先根据五元组找到对应udp socket,找不到再交给listener的socket的
-	// 	//create new udp, DialUDP err:dial udp 192.168.x.x:12347-\u003e192.168.x.x:44122: bind: address already in use\n"
+	// 	//这里打印错误信息:create new udp, DialUDP err:dial udp 192.168.x.x:12347-\u003e192.168.x.x:44122: bind: address already in use\n"
 	// 	return
 	// }
 
-	l.logger.Infof("CreateUDPConnByNewDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
+	l.logger.Infof("CreateUDPConnByDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
 	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
 	if err != nil {
 		panic(err)
@@ -149,7 +150,7 @@ func (l *Listener) CreateUDPConnByNewDstAddr(laddr *net.UDPAddr, addr net.Addr, 
 		go uc.writeBatchLoop()
 	}
 
-	l.logger.Infof("CreateUDPConnByNewDstAddr, listener:%v, new conn:%v, magic:%v", l, addr, uc.magic)
+	l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, magic:%v", l, addr, uc.magic)
 	l.clients.Store(key, uc)
 	atomic.AddInt64(&l.clientCount, 1)
 	//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
@@ -240,17 +241,14 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 	}
 	uc := conn.(*net.UDPConn)
 
-	//想侦听再Connect()有个问题，这一瞬间如果有新的数据发送到这个处于侦听的conn，会出现啥异常情况？
+	//由于lc的Control()里不能调用unix.Connect(), 只能lc.ListenPacket()侦听后再Connect()
+	//TODO: 想侦听再Connect()有个问题，这一瞬间如果有新的数据发送到这个处于侦听的conn，会出现啥异常情况？
 	//uc.Connect(raddr)
 	rawconn, err := uc.SyscallConn()
 	if err != nil {
 		panic(err)
 	}
 	rawconn.Control(func(fd uintptr) {
-		// err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-		// if err != nil {
-		// 	panic(err)
-		// }
 		ip4 := raddr.IP.To4()
 		l.logger.Infof("bind raddr, fd:%d, ip:%v, port:%d", fd, ip4, raddr.Port)
 		err := unix.Connect(int(fd), &unix.SockaddrInet4{Addr: [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]}, Port: raddr.Port})
