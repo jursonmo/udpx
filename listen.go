@@ -491,7 +491,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		}
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
-		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
+		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 		n := copy(uc.magic[:], data)
 		if n != magicSize {
 			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))

@@ -74,5 +74,5 @@ cat /proc/net/udp
 
 17. TODO: 发现一个问题，由于listener产生是UDPConn是有listener conn发送数据的，但是listener conn发送数据时，是不绑定源地址的，是由系统路由表决定最终的源地址，这样有个问题，如果udpx server 回应client数据时，走另一个网口出去，即来回路径不一致，那么server回应的数据的源地址跟client最初发送的目的地址不一样的(即不是同一个五元组的连接)，对client udp socket来说，是接受不到服务器回应的数据的。有两种方法解决这种问题：
   + 1. udp server 侦听时，不是侦听0.0.0.0:12345, 而是指定ip, 比如192.168.1.1:12345
-  + 2. 服务器创建UDPConn时, 需要读取到报文的目的ip地址(IP_PKTINFO)，这样服务端创建UDPConn是就可以绑定源地址和目的地址，以后直接用这个UDPConn来收发数据，不再用listener conn 来收发数据，这样可不可行，如果可行，那么再多的client, listener conn 都没有收发数据的压力。因为如果按现在的方式，完全由listener conn来收发数据，性能上容易出现瓶颈，而且它需要收到每个报文都要判断是哪个UDPConn的，这个也是消耗性能的。(经过测试，这种方法不行，如果已经有udp server 侦听0.0.0.0:12345, 再想通过net.DialUDP(network, la, ra) 绑定源地址x.x.x.x:12345, 会提示错误bind: address already in use。可以考虑listen x.x.x.x:12345,再绑定远端地址,比如unix.Connect()来说生成。)
+  + 2. 服务器创建UDPConn时, 需要读取到报文的目的ip地址(IP_PKTINFO)，这样服务端创建UDPConn是就可以绑定源地址和目的地址，以后直接用这个UDPConn来收发数据，不再用listener conn 来收发数据，这样可不可行，如果可行，那么再多的client, listener conn 都没有收发数据的压力。因为如果按现在的方式，完全由listener conn来收发数据，性能上容易出现瓶颈，而且它需要收到每个报文都要判断是哪个UDPConn的，这个也是消耗性能的。(经过测试，这种方法不行，如果已经有udp server 侦听0.0.0.0:12345, 再想通过net.DialUDP(network, la, ra) 绑定源地址x.x.x.x:12345, 会提示错误bind: address already in use。可以考虑listen x.x.x.x:12345 同时设置REUSEPORT,生成conn 后再绑定远端地址,比如unix.Connect()来绑定, 这样就能生成独立的一对一的udp socket, 而udp listener socket 是一对多client的。Done:2025-06-22)
 

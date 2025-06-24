@@ -73,6 +73,8 @@ func (l *Listener) readBatchLoopv2() error {
 
 			dstAddr = nil
 			//如果开启了IP_PKTINFO,则需要从OOB中获取目的地址
+			//如果获取成功，并且绑定源和目的地址成功而产生独立的UDPConn,那么listener 这里只会接受到新连接的数据
+			//不会established udp 的数据, 这样这里listener lconn的读取数据压力其实是很小的, 即开启了IP_PKTINFO, 也不会影响性能。
 			if IP_PKTINFO_ENABLE && rms[i].NN > 0 {
 				dstAddr, err = parseDstAddrFromOOB(rms[i].OOB[:rms[i].NN], laddr.Port)
 				if err != nil {
@@ -90,6 +92,10 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 	if dstAddr != nil {
 		l.CreateUDPConnByDstAddr(dstAddr, addr, b.Bytes())
 		return
+	}
+
+	if IP_PKTINFO_ENABLE {
+		panic("if IP_PKTINFO_ENABLE, data should be handled by standalone UDPConn, can't be here")
 	}
 	//只统计非ctrl数据的包数
 	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
@@ -111,11 +117,13 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	if !ok {
 		return
 	}
+	//TODO: 由于listener lconn是批量读取的, 这批里有多个报文都是来自同一个新的client, 第一个报文会创建UDPConn, 但是该client的第二个报文就不能再创建了
+	//即, 如果raddr 的对应的UDPConn已经创建，那么这里就不需要再创建了，把数据put 到对应的UDPConn的rxqueue 里。
 
 	//lconn, err := net.DialUDP(l.lconn.LocalAddr().Network(), dstAddr, raddr)
 	// if err != nil {
 	// 	l.logger.Errorf("create new udp, DialUDP err:%v\n", err)
-	// 	//因为listener已经侦听了12347端口，所以不能再bind 12347端口?为啥，其实可以允许绑定的，这样内核收到数据后，先根据五元组找到对应udp socket,找不到再交给listener的socket的
+	// 	//因为listener已经侦听了12347端口，所以不能再bind 12347端口?为啥，按道理应该允许绑定的，这样内核收到数据后，先根据五元组找到对应udp socket,找不到再交给listener的socket的
 	// 	//这里打印错误信息:create new udp, DialUDP err:dial udp 192.168.x.x:12347-\u003e192.168.x.x:44122: bind: address already in use\n"
 	// 	return
 	// }
@@ -127,7 +135,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	}
 	//查看bind端口的情况: lsof -an -p $pid
 
-	uc := NewUDPConn(nil, lconn, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
+	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 	n := copy(uc.magic[:], data)
 	if n != magicSize {
 		panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))

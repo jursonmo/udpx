@@ -25,13 +25,15 @@ type UDPConn struct {
 	mux    sync.Mutex
 	ln     *Listener
 	client bool //true表示lconn is conneted(绑定了目的地址), 即可以直接用Write，不需要WriteTo
-	magic  [magicSize]byte
-	lconn  *net.UDPConn
-	pc     *ipv4.PacketConn
-	raddr  *net.UDPAddr
-	// rms     []ipv4.Message
-	// wms     []ipv4.Message
-	// batch   bool
+	//standalone true表示是独立的udpconn, 即自己的lconn负责收发数据等任务, 比如client dial 生成的UDPConn, 它就是独立的udpconn, standalone 为true, 就不需要listener 来帮忙收发。
+	// 一般listener产生的UDPConn, 它们的收发工作都是由listener lconn 负责的，UDPConn write时只是把数据放到 ln txqueue 里而已。
+	//启用IP_PKTINFO后，listener产生的UDPConn会绑定源和目的地址，成为独立的udpconn, 就可以独立收发数据，像client UDPConn 一样
+	//所以收发操作时，需要判断standalone，而不是判断c.client 或者 c.ln
+	standalone bool
+	magic      [magicSize]byte
+	lconn      *net.UDPConn
+	pc         *ipv4.PacketConn
+	raddr      *net.UDPAddr
 
 	//如果上层能保证一次性读完MyBuffer的内容，可以设置此为true.如果上层用bufio来读,一般能一次性读完
 	//udp基于报文收发的, 系统默认就是要一次性读完的一个报文，不读完，内核就丢弃这个报文剩下的那部分，下次再读也读不到
@@ -137,7 +139,7 @@ func (uc *UDPConn) SetTxBlocked(b bool) {
 	uc.txBlocked = b
 }
 
-func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
+func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
 	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1), txBlocked: txqueueBlocked,
 		rxqueuelen:  1024, //接收的队列可以适当大一点, 避免突发流量丢包, 特别是ln 批量读数据后，put 到指定UDPConn的rxqueue 时是非阻塞的。
 		txqueuelen:  512,
@@ -145,6 +147,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, raddr *net.UDPAddr, opts ...UD
 		writeBatchs: defaultBatchs,
 		maxBufSize:  defaultMaxPacketSize,
 		oneshotRead: true, //默认为true, udp 就应该是oneshotRead
+		standalone:  standalone,
 	}
 	uc.rxhandler = uc.handlePacket
 	for _, opt := range opts {
@@ -240,7 +243,7 @@ func (c *UDPConn) Close() error {
 			c.ln.deleteConn(key)
 		}
 	}
-	if c.client && c.lconn != nil {
+	if c.standalone && c.lconn != nil {
 		c.lconn.Close()
 	}
 	log.Printf("udpx client:%v, %s->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
@@ -261,8 +264,8 @@ func (c *UDPConn) RemoteAddr() net.Addr {
 var ErrShortRead = errors.New("short Read error, Read(buf) should parameters buf len is small than udp packet")
 
 func (c *UDPConn) Read(buf []byte) (n int, err error) {
-	//客户端读模式，又不启用batch, 就一个个读
-	if c.client && c.readBatchs == 0 {
+	//客户端读模式(应该判断是否是独立收发的)，又不启用batch, 就一个个读
+	if /*c.client*/ c.standalone && c.readBatchs == 0 {
 		return c.lconn.Read(buf)
 	}
 	user_buf_len := len(buf)
@@ -289,6 +292,7 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 
 	//1.客户端读模式, 启用了batch读(说明后台有任务负责批量读), 这里只需从队列里读
 	//2.服务端模式, 不管是否批量读，都是由listen socket去完成读，UDPConn只需从队列里读
+	//3.服务端模式，但是生成的UDPConn 是独立模式, 独立模式下自己有单独的任务批量读取，那么这里就只需从队列里读, 跟1一样。
 	select {
 	case b, ok := <-c.rxqueueB: //[]byte rxqueue
 		if !ok {
@@ -334,8 +338,8 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 }
 
 func (c *UDPConn) Write(b []byte) (n int, err error) {
-	//client conn
-	if c.client {
+	//client conn, 应该是判断是否独立收发的
+	if /*c.client*/ c.standalone {
 		if c.writeBatchs > 0 {
 			return c.WriteWithBatch(b)
 		}
@@ -406,8 +410,8 @@ func (c *UDPConn) String() string {
 	if c.ln != nil {
 		lnString = fmt.Sprintf("listener id:%v", c.ln.id)
 	}
-	return fmt.Sprintf("isClient:%v, %s, laddr:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
-		c.client, lnString, c.lconn.LocalAddr(), c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
+	return fmt.Sprintf("isClient:%v, standalone:%v, %s, laddr:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
+		c.client, c.standalone, lnString, c.lconn.LocalAddr(), c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen, c.rxPackets, c.rxDropPkts, c.txPackets, c.txDropPkts, c.txBlocked)
 }
 
 // 重写对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,

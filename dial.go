@@ -38,7 +38,7 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
 	}
 
-	c := NewUDPConn(nil, lconn, ra, opts...)
+	c := NewUDPConn(nil, lconn, true, ra, opts...)
 	// if c.rxhandler != nil {
 	// 	go c.ReadBatchLoop(c.rxhandler)
 	// }
@@ -48,7 +48,7 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 		return nil, err
 	}
 
-	if c.client {
+	if c.standalone {
 		if c.readBatchs > 0 {
 			//go uc.ReadBatchLoop(uc.rxhandler)
 			InitPool(c.maxBufSize)
@@ -60,7 +60,7 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 			go c.writeBatchLoop()
 		}
 	}
-	gLogger.Infof("ok, started udpconn:%v", c)
+	gLogger.Infof("ok, started UDPConn:%v", c)
 	return c, nil
 }
 
