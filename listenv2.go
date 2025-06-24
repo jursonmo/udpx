@@ -102,7 +102,7 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 		if err := uc.PutRxQueue2(b); err != nil {
 			l.rxDropPkts++
 			if l.rxDropPkts&127 == 0 {
-				//iperf跑流量测试时,iperf显示丢包很多,但服务端这里没有打印
+				//iperf跑流量测试时,iperf显示丢包很多, 但服务端这里没有打印, 说明不是rxqueue太小的问题。
 				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, l.rxDropPkts)
 			}
 		} else {
@@ -117,8 +117,32 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	if !ok {
 		return
 	}
-	//TODO: 由于listener lconn是批量读取的, 这批里有多个报文都是来自同一个新的client, 第一个报文会创建UDPConn, 但是该client的第二个报文就不能再创建了
-	//即, 如果raddr 的对应的UDPConn已经创建，那么这里就不需要再创建了，把数据put 到对应的UDPConn的rxqueue 里。
+	//由于listener lconn是批量读取的, 这批里可能有多个报文都是来自同一个新的client, 第一个报文会创建UDPConn, 但是该client的第二个报文就不能再创建了
+	//即, 如果raddr 的对应的UDPConn已经创建，那么这里就不需要再创建了，直接把数据put 到对应的UDPConn的rxqueue 里。
+	v, ok := l.clients.Load(key)
+	if ok {
+		uc := v.(*UDPConn)
+		b := GetMyBuffer(0)
+		n, err := b.Write(data)
+		if err != nil {
+			l.logger.Errorf("%v, MyBuffer Write data err:%v\n", l, err)
+			return
+		}
+		if n != len(data) {
+			panic(fmt.Errorf("n != len(data), n:%d, len(data):%d", n, len(data)))
+		}
+
+		if err := uc.PutRxQueue2(b); err != nil {
+			l.rxDropPkts++
+			if l.rxDropPkts&127 == 0 {
+				//iperf跑流量测试时, iperf显示丢包很多, 但服务端这里没有打印, 说明不是rxqueue太小的问题。
+				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, l.rxDropPkts)
+			}
+		} else {
+			l.rxPackets++
+		}
+		return
+	}
 
 	//lconn, err := net.DialUDP(l.lconn.LocalAddr().Network(), dstAddr, raddr)
 	// if err != nil {
