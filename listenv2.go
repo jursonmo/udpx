@@ -73,8 +73,9 @@ func (l *Listener) readBatchLoopv2() error {
 
 			dstAddr = nil
 			//如果开启了IP_PKTINFO,则需要从OOB中获取目的地址
-			//如果获取成功，并且绑定源和目的地址成功而产生独立的UDPConn,那么listener 这里只会接受到新连接的数据
-			//不会established udp 的数据, 这样这里listener lconn的读取数据压力其实是很小的, 即开启了IP_PKTINFO, 也不会影响性能。
+			//如果获取成功，并且绑定源和目的地址成功而产生独立的UDPConn, 后面该client的数据都要从这个UDPConn lconn读取, 那么listener 这里只会接受到新连接的数据
+			//不会是established udp 的数据, 这样这里listener lconn的读取数据压力其实是很小的, 因为listener lconn的数据报文数量很少。
+			//由于数据少, 即使listener lconn开启了IP_PKTINFO特性后, 也不会因为数据报文里带有out-of-band数据而影响性能。
 			if IP_PKTINFO_ENABLE && rms[i].NN > 0 {
 				dstAddr, err = parseDstAddrFromOOB(rms[i].OOB[:rms[i].NN], laddr.Port)
 				if err != nil {
@@ -94,9 +95,11 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 		return
 	}
 
+	//开启了IP_PKTINFO_ENABLE后, 数据不会走到这里. 数据都被CreateUDPConnByDstAddr处理，或者被独立的UDPConn处理了。
 	if IP_PKTINFO_ENABLE {
 		panic("if IP_PKTINFO_ENABLE, data should be handled by standalone UDPConn, can't be here")
 	}
+
 	//只统计非ctrl数据的包数
 	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
 		if err := uc.PutRxQueue2(b); err != nil {
@@ -151,6 +154,11 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	// 	//这里打印错误信息:create new udp, DialUDP err:dial udp 192.168.x.x:12347-\u003e192.168.x.x:44122: bind: address already in use\n"
 	// 	return
 	// }
+
+	//新的client数据, 第一个必须是握手报文
+	if len(data) != magicSize {
+		return
+	}
 
 	l.logger.Infof("CreateUDPConnByDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
 	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
@@ -242,7 +250,6 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 			}); err != nil {
 				panic(err)
-				return err
 			}
 
 			if err := c.Control(func(fd uintptr) {
@@ -262,14 +269,17 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 				// }
 			}); err != nil {
 				panic(err)
-				return err
+				//return err
 			}
 			return opErr
 		},
 	}
 	conn, err := lc.ListenPacket(context.Background(), laddr.Network(), laddr.String())
 	if err != nil {
-		panic(err) //如果在上面的c.Control()里就调用unix.Connect(), 这里会panic: listen udp 192.168.6.70:12347: bind: invalid argument
+		//如果在上面的c.Control()里就调用unix.Connect(), 这里会panic: listen udp 192.168.6.70:12347: bind: invalid argument
+		//原因是/usr/local/go/src/net/sock_posix.go func (fd *netFD) listenDatagram()里是先执行Control(), 再bind laddr的
+		// 先执行Control() 里的unix.Connect()后，就相当于绑定一个具体的源地址(这个源地址有路由表决定, 源端口随机)，这时再bind laddr 就会失败
+		panic(err)
 	}
 	uc := conn.(*net.UDPConn)
 

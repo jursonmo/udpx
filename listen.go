@@ -360,7 +360,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 			}); err != nil {
 				panic(err)
-				return err
+				//return err
 			}
 
 			// if err := c.Control(func(fd uintptr) {
@@ -388,7 +388,6 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 					opErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
 				}); err != nil {
 					panic(err)
-					//return err
 				}
 			}
 			return opErr
