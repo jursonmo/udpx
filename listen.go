@@ -1,6 +1,7 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -288,6 +288,7 @@ type Listener struct {
 	accept      chan *UDPConn
 	txBlocked   bool //默认为true; 批量发送时，会用到txqueue, 写到txqueue是否阻塞; accept所产生的UdpConn默认都以其listener的txBlocked来决定是否阻塞发送。但是可以通过UdpConn的SetTxBlocked()来改变。
 	txqueue     chan MyBuffer
+	txqueuelen  int
 	txPackets   int64 //统计发送的包数,是所有属于它所accept的UdpConn的发送的包数总和
 	txDropPkts  int64
 	rxPackets   int64
@@ -346,7 +347,7 @@ func LnWithTxBlocked(b bool) ListenerOpt {
 }
 
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -358,8 +359,16 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			if err := c.Control(func(fd uintptr) {
 				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 			}); err != nil {
-				return err
+				panic(err)
+				//return err
 			}
+
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			// }); err != nil {
+			// 	panic(err)
+			// 	return err
+			// }
 
 			// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
 			// if err := c.Control(func(fd uintptr) {
@@ -373,6 +382,14 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 			// 	return err
 			// }
 
+			//设置IP_PKTINFO
+			if IP_PKTINFO_ENABLE {
+				if err := c.Control(func(fd uintptr) {
+					opErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
+				}); err != nil {
+					panic(err)
+				}
+			}
 			return opErr
 		},
 	}
@@ -381,16 +398,19 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	if err != nil {
 		return nil, pkgerr.WithStack(err)
 	}
+
 	l.lconn = conn.(*net.UDPConn)
-	err = setSocketBuf(l.lconn, 1024*1024*5)
-	if err != nil {
-		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+	if !IP_PKTINFO_ENABLE { //如果不启用IP_PKTINFO, 收发数据完全由listener负责, 那么就需要设置足够大的收发缓冲区
+		err = setSocketBuf(l.lconn, 1024*1024*5)
+		if err != nil {
+			panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+		}
 	}
 
 	l.pc = ipv4.NewPacketConn(conn)
 
 	if l.batchs > 0 {
-		l.txqueue = make(chan MyBuffer, 512)
+		l.txqueue = make(chan MyBuffer, l.txqueuelen) //还是跟以前一样提前初始化, 确保发送数据时，txqueue是确定已经初始化好的。
 		go l.writeBatchLoop()
 		//go l.readBatchLoop()
 		go l.readBatchLoopv2() //use buffer pool
@@ -398,7 +418,6 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 		//read one packet by one syscall
 		go l.readLoop()
 	}
-
 	return l, nil
 }
 
@@ -473,7 +492,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		}
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
-		uc = NewUDPConn(l, l.lconn, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
+		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
 		n := copy(uc.magic[:], data)
 		if n != magicSize {
 			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
@@ -494,7 +513,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 
 	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
 	//这样导致的后果就是业务层不能发送跟 magic 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
-	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic[:]) {
+	if len(data) == magicSize && bytes.Equal(data, uc.magic[:]) {
 		return uc, true
 	}
 	return uc, false

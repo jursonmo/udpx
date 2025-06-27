@@ -70,4 +70,18 @@ cat /proc/net/udp
   
 15. TODO: iperf接收端 gc 次数依然很多(Done: readBatchLoopv2()也减少内存对象的分配。 从火焰图上看,只剩下golang.org/x/net/internal/socket.parseInetAddr 分配的对象暂时没办法处理)(git 仓库:https://github.com/golang/net/)
 
-16. TODO: client 正在发送数据，服务端重启了，服务端接受到非magic包，是不创建udpConn的，这时client无法感知到，继续发数据，只能等心跳超时后自己断开，这样有点慢。服务端可以在尝试创建新的UDPConn时，如果发现不是magic 握手报文，可以回应一个关闭的控制报文，client 收到后，就知道服务端创建失败，就可以断开连接了。(Done: 经过测试，如果服务端程序退出了，client 在发送数据时，会收到错误 recvmmsg: connection refused，原因是服务端会回应icmp, client才感知到的，所以client 很快就重连了，重连成功后，为啥隧道为啥ping 不通，是因为服务端重启后，mvnet的mac地址变化了，但是client的arp缓存没有更新，所以ping 不同，arp -d 10.10.10.1 清空下缓存, 马上可以ping通，可以通过在tun.mac写死来解决。退一步，如果服务器重启非常快，即服务器的udp端口马上恢复到侦听的状态，那么client 是收不到错误 recvmmsg: connection refused, 等待超时再重连也可以接受。 还有一种可能，网络不通，client 也是收不到connection refused错误，等待重连也没有问题； 结论是暂时不去实现)
+16. TODO: client 正在发送数据，服务端重启了，服务端接受到非magic包，是不创建udpConn的，这时client无法感知到，继续发数据，只能等心跳超时后自己断开，这样有点慢。服务端可以在尝试创建新的UDPConn时，如果发现不是magic 握手报文，可以回应一个关闭的控制报文，client 收到后，就知道服务端创建失败，就可以断开连接了。(Done: 经过测试，如果服务端程序退出了，client 在发送数据时，会收到错误 recvmmsg: connection refused，原因是服务端会回应icmp, client才感知到的，所以client 很快就重连了，重连成功后，为啥隧道为啥ping 不通，是因为服务端重启后，mvnet的mac地址变化了，但是client的arp缓存没有更新，所以ping 不同，arp -d 10.10.10.1 清空下缓存, 马上可以ping通，可以通过在tun.mac写死来解决。退一步，如果服务器重启非常快，即服务器的udp端口马上恢复到侦听的状态，那么client 是收不到错误 recvmmsg: connection refused, 等待超时再重连也可以接受。 还有一种可能，网络不通，client 也是收不到connection refused错误，等待重连也没有问题； Done: 结论是暂时不去实现)
+
+17. TODO: 发现一个问题，由于listener产生是UDPConn是有listener conn发送数据的，但是listener conn发送数据时，是不绑定源地址的，是由系统路由表决定最终的源地址，这样有个问题，如果udpx server 回应client数据时，走另一个网口出去，即来回路径不一致，那么server回应的数据的源地址跟client最初发送的目的地址不一样的(即不是同一个五元组的连接)，对client udp socket来说，是接受不到服务器回应的数据的。有两种方法解决这种问题：
+  + 1. udp server 侦听时，不是侦听0.0.0.0:12345, 而是指定ip, 比如192.168.1.1:12345, 这样可以保证服务端返回数据时，用的源地址就是client发起的目的地址。
+  + 2. 服务器创建UDPConn时, 需要读取到报文的目的ip地址(IP_PKTINFO)，这样服务端创建UDPConn是就可以绑定源地址和目的地址，以后直接用这个UDPConn来收发数据，不再用listener conn 来收发数据，这样可不可行，如果可行，那么再多的client, listener conn 都没有收发数据的压力。因为如果按现在的方式，完全由listener conn来收发数据，性能上容易出现瓶颈，而且它需要收到每个报文都要判断是哪个UDPConn的，这个也是消耗性能的。(经过测试，这种方法不行，如果已经有udp server 侦听0.0.0.0:12345, 再想通过net.DialUDP(network, la, ra) 绑定源地址x.x.x.x:12345, 会提示错误bind: address already in use。可以考虑listen x.x.x.x:12345 同时设置REUSEPORT,生成conn 后再绑定远端地址,比如unix.Connect()来绑定, 这样就能生成独立的一对一的udp socket, 而udp listener socket 是一对多client的。Done:2025-06-22)
+  + 3. 上面2的先SO_REUSEPOR listen, 再 connect的实现方式是有缺陷的，一、创建listen 之后 connect之前，已经有数据分配到这个socket了，那么需要检查下数据的源IP是否是connect的IP一致，不一致就直接丢弃(Done)。 二、添加一个SO_REUSEPOR listen socket时，会打破udp 负载组的大小，导致原先旧client的数据原来是交给udp server 2处理的，可能以后会交给 udp server 3处理了。因为内核的分发算法 (核心是哈希 + 取模，), 新增一个SO_REUSEPOR listen socket, 取模的基数改变了。但是我的实现是服务器产生的每个UDPConn都是connect绑定唯一的五元组的，也就是client的除了第一个握手报文交给listener 处理，后续的报文都是交给指定的UDPConn处理的，所以不用考虑client的数据交给不同listener处理的问题。(Done)
+  + 4. 补充下知识：UDP 本身是无连接的, 没有“会话粘性”保证： 内核 SO_REUSEPORT 的实现只保证在套接字组大小稳定时，相同源地址的数据包去往同一个套接字。一旦组大小改变，这种映射关系就被打破了。内核不会为了维持旧客户端与旧套接字的关联而做特殊处理。所以添加或者关闭 SO_REUSEPOR listener 会对原来的client的数据有影响的，这是反而更加显得用connect方式生成独立的UDPConn的必要性，它保证后续的报文都送到这个独立的UDPConn, 而不是送到可能不固定的listener conn. 
+
+  17. TODO: listener 生成的独立UDPConn, 需要单独设置自己的收发缓冲区。(Done: 但是收发缓冲区设置有点大, 目前只是为了高性能收发)
+  
+    
+
+
+
+

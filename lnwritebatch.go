@@ -31,7 +31,9 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 		panic(fmt.Errorf("n:%d, len(data):%d", n, len(data)))
 	}
 
-	if c.ln != nil {
+	if c.standalone {
+		err = c.PutTxQueue(b, c.txBlocked)
+	} else if c.ln != nil {
 		b.SetAddr(c.raddr)
 		err = c.ln.PutTxQueue(b, c.txBlocked)
 		if err != nil {
@@ -40,8 +42,7 @@ func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
 			c.txPackets++
 		}
 	} else {
-		//b.SetAddr(c.raddr) // ?? pc write 时，底层net.UDPConn 已经通过DialUDP() bind raddr ?
-		err = c.PutTxQueue(b, c.txBlocked)
+		panic(fmt.Errorf("if not standalone, must have ln to write batch. c.standalone:%v, c.ln:%v", c.standalone, c.ln))
 	}
 	if err != nil {
 		return 0, err
@@ -84,6 +85,10 @@ func (l *Listener) writeBatchLoop() (err error) {
 	defer func() { l.writeBatchAble = false }()
 	l.logger.Infof("%v, writeBatchLoop started", l)
 	defer func() { l.logger.Errorf("%v, writeBatchLoop quit, err:%+v", l, err) }()
+
+	if l.txqueue == nil {
+		l.txqueue = make(chan MyBuffer, l.txqueuelen)
+	}
 
 	err = bw.WriteBatchLoop(l.txqueue)
 	return

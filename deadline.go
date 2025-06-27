@@ -15,7 +15,7 @@ var ErrWriteTimeout = errors.New("write timeout")
 // 不能直接对c.lconn 进行设置 Deadline
 // 解决方法是对于server 产生的UDPConn，自己增加readTimer writeTimer 来实现超时功能。
 func (c *UDPConn) SetDeadline(t time.Time) error {
-	if c.client {
+	if /*c.client*/ c.standalone { //以standalone作为判断
 		err := c.lconn.SetReadDeadline(t)
 		if err != nil {
 			return err
@@ -31,7 +31,7 @@ func (c *UDPConn) SetDeadline(t time.Time) error {
 }
 
 func (c *UDPConn) SetReadDeadline(t time.Time) error {
-	if c.client {
+	if /*c.client*/ c.standalone {
 		return c.lconn.SetReadDeadline(t)
 	}
 	//server conn SetReadDeadline
@@ -39,7 +39,7 @@ func (c *UDPConn) SetReadDeadline(t time.Time) error {
 }
 
 func (c *UDPConn) SetWriteDeadline(t time.Time) error {
-	if c.client {
+	if /*c.client*/ c.standalone {
 		return c.lconn.SetWriteDeadline(t)
 	}
 	//server conn SetWriteDeadline
