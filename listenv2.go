@@ -173,11 +173,22 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 		panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
 	}
 
+	//记录当前socket的接收缓冲区的数据字节数，这部分数据是需要检查其地址是否正确的.
+	uc.needCheck, err = getUDPSocketLen(uc.lconn)
+	if err != nil {
+		panic(err)
+	}
+
 	//if _, err := uc.lconn.WriteTo(data, addr); err != nil {
 	if _, err := uc.lconn.Write(data); err != nil {
 		l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
 		lconn.Close()
 		return
+	}
+
+	err = setSocketBuf(uc.lconn, 1024*1024) //1M
+	if err != nil {
+		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
 	}
 
 	if uc.readBatchs > 0 {
@@ -246,11 +257,11 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 			}); err != nil {
 				panic(err)
 			}
-			if err := c.Control(func(fd uintptr) {
-				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-			}); err != nil {
-				panic(err)
-			}
+			// if err := c.Control(func(fd uintptr) {
+			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			// }); err != nil {
+			// 	panic(err)
+			// }
 
 			if err := c.Control(func(fd uintptr) {
 				// ip4 := laddr.IP.To4()
@@ -282,10 +293,15 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 		panic(err)
 	}
 	uc := conn.(*net.UDPConn)
+	//uc.Connect(raddr)
 
 	//由于lc的Control()里不能调用unix.Connect(), 只能lc.ListenPacket()侦听后再Connect()
 	//TODO: 想侦听再Connect()有个问题，这一瞬间如果有新的数据发送到这个处于侦听的conn，会出现啥异常情况？
-	//uc.Connect(raddr)
+	//connect() 之前收到的数据，都还在队列里等着被 recvfrom() 取走，connect() 不会把它们扔掉。
+	//connect() 只是给未来到达的数据报设置了一个新的“门卫规则”。
+	//所以要检查下数据的源地址是否是connect的地址, 但是每个数据都要检查下，也没必要，只需要检查当前connecth后socket的队列字节长度即可
+	//如果不是connect的地址，就会被丢弃, 不能交给上层业务，
+
 	rawconn, err := uc.SyscallConn()
 	if err != nil {
 		panic(err)
@@ -295,8 +311,13 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 		l.logger.Infof("bind raddr, fd:%d, ip:%v, port:%d", fd, ip4, raddr.Port)
 		err := unix.Connect(int(fd), &unix.SockaddrInet4{Addr: [4]byte{ip4[0], ip4[1], ip4[2], ip4[3]}, Port: raddr.Port})
 		if err != nil {
-			panic(err) //panic: cannot assign requested address
+			panic(err)
 		}
+		// //connect 后，恢复SO_REUSEPORT 为 0, 以免影响udp listener 负载？？但是这样会导致下次调用lc.ListenPacket() 出错bind: address already in use。不知道为啥。
+		// err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 0)
+		// if err != nil {
+		// 	panic(err)
+		// }
 	})
 	return uc, nil
 }

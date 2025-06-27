@@ -30,6 +30,7 @@ type UDPConn struct {
 	//启用IP_PKTINFO后，listener产生的UDPConn会绑定源和目的地址，成为独立的udpconn, 就可以独立收发数据，像client UDPConn 一样
 	//所以收发操作时，需要判断standalone，而不是判断c.client 或者 c.ln
 	standalone bool
+	needCheck  int //ln 产生独立UDPConn 在connect 时, socket 已经缓存的数据字节长度, 这些数据需要检查地址是否正确。
 	magic      [magicSize]byte
 	lconn      *net.UDPConn
 	pc         *ipv4.PacketConn

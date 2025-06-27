@@ -1,6 +1,7 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -398,10 +398,13 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	if err != nil {
 		return nil, pkgerr.WithStack(err)
 	}
+
 	l.lconn = conn.(*net.UDPConn)
-	err = setSocketBuf(l.lconn, 1024*1024*5)
-	if err != nil {
-		panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+	if !IP_PKTINFO_ENABLE { //如果不启用IP_PKTINFO, 收发数据完全由listener负责, 那么就需要设置足够大的收发缓冲区
+		err = setSocketBuf(l.lconn, 1024*1024*5)
+		if err != nil {
+			panic(fmt.Errorf("setSocketBuf failed, err:%v", err))
+		}
 	}
 
 	l.pc = ipv4.NewPacketConn(conn)
@@ -415,7 +418,6 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 		//read one packet by one syscall
 		go l.readLoop()
 	}
-
 	return l, nil
 }
 
@@ -511,7 +513,7 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 
 	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
 	//这样导致的后果就是业务层不能发送跟 magic 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
-	if len(data) == magicSize && reflect.DeepEqual(data, uc.magic[:]) {
+	if len(data) == magicSize && bytes.Equal(data, uc.magic[:]) {
 		return uc, true
 	}
 	return uc, false

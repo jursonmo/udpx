@@ -1,6 +1,7 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -60,6 +61,7 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 			go c.writeBatchLoop()
 		}
 	}
+
 	gLogger.Infof("ok, started UDPConn:%v", c)
 	return c, nil
 }
@@ -110,6 +112,13 @@ func (c *UDPConn) readBatchLoopv2() error {
 	log.Printf("client:%v->%v,read batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....",
 		c.LocalAddr(), c.RemoteAddr(), c.readBatchs, c.maxBufSize)
 	defer func() { log.Printf("%v readBatchLoopv2 quit, err:%v", c, err) }()
+
+	checkLen := int(0)
+	//检查
+	if !c.standalone {
+		panic(fmt.Errorf("only standalone UDPConn will run readBatchLoopv2, UDPConn:%v", c))
+	}
+
 	for {
 		for i := 0; i < n; i++ {
 			b := GetMyBuffer(0) //复用对象
@@ -129,6 +138,23 @@ func (c *UDPConn) readBatchLoopv2() error {
 		}
 		for i := 0; i < n; i++ {
 			buffers[i].Advance(rms[i].N)
+
+			if c.ln != nil { //判断当前c是否是ln 产生的UDPConn
+				//服务端产生的独立UDPConn, 所以需要判断数据是否是magic data, 避免client 重传了magic data
+				if rms[i].N == magicSize && bytes.Equal(buffers[i].Bytes(), c.magic[:magicSize]) {
+					continue
+				}
+
+				//只需要检查独立UPConn在bind 和 connect 之间已经缓存到socket的那部分数据
+				if checkLen < c.needCheck {
+					checkLen += rms[i].N
+					//为了避免独立UPConn在bind 和 connect 之间已经有数据到来，所以这里要检查下数据的源IP是否是connect的IP
+					if !rms[i].Addr.(*net.UDPAddr).IP.Equal(c.raddr.IP) {
+						gLogger.Warnf("readBatchLoopv2 client:%v->%v, drop pkt, pkt srcIP:%v, but UDPConn remoteIP:%v\n", c.LocalAddr(), c.RemoteAddr(), rms[i].Addr, c.raddr)
+						continue
+					}
+				}
+			}
 			c.PutRxQueue2(buffers[i])
 		}
 	}
