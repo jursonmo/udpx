@@ -1,12 +1,12 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 
@@ -16,10 +16,10 @@ import (
 var ErrConnClosed = errors.New("conn closed")
 
 const (
-	magicSize = 4
+	tokenSize = 4
 )
 
-var fixedMagic [magicSize]byte = [magicSize]byte{0x01, 0x02, 0x03, 0x04}
+var fixedToken [tokenSize]byte = [tokenSize]byte{0x01, 0x02, 0x03, 0x04}
 
 type UDPConn struct {
 	mux    sync.Mutex
@@ -31,7 +31,7 @@ type UDPConn struct {
 	//所以收发操作时，需要判断standalone，而不是判断c.client 或者 c.ln
 	standalone bool
 	needCheck  int //ln 产生独立UDPConn 在connect 时, socket 已经缓存的数据字节长度, 这些数据需要检查地址是否正确。
-	magic      [magicSize]byte
+	token      []byte
 	lconn      *net.UDPConn
 	pc         *ipv4.PacketConn
 	raddr      *net.UDPAddr
@@ -161,28 +161,27 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	if uc.ln == nil {
 		//client dial
 		uc.client = true
-		//init magic
-		// _, err := rand.Read(uc.magic[:])
-		// if err != nil {
-		// 	return nil
-		// }
-		// log.Printf("magic:%v\n", uc.magic)
-		uc.magic = fixedMagic
+		//init token
+		//uc.token = fixedToken
+		uc.token = GenToken()
+	} else {
+		//server accept's UDPConn need to alloc space for saving token
+		uc.token = make([]byte, tokenSize)
 	}
 	gLogger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
 
 // 握手, 目前暂时只发送一次magic. 不会重复发送, 避免服务器收到两次相同的magic。
-// TODO: 服务器保存magic,每次收到magicSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。
+// TODO: 服务器保存token,每次收到tokenSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。
 func (c *UDPConn) handshake(_ context.Context) error {
-	//_, err := c.lconn.WriteTo(c.magic[:], c.raddr)
-	_, err := c.lconn.Write(c.magic[:])
+	//_, err := c.lconn.WriteTo(c.token[:], c.raddr)
+	_, err := c.lconn.Write(c.token[:])
 	if err != nil {
-		log.Printf("send magic err:%v", err)
+		gLogger.Errorf("send token err:%v", err)
 		return err
 	}
-	buf := make([]byte, len(c.magic))
+	buf := make([]byte, len(c.token))
 	c.lconn.SetDeadline(time.Now().Add(time.Second * 2))
 	defer c.lconn.SetDeadline(time.Time{})
 	//_, raddr, err := c.lconn.ReadFrom(buf)
@@ -194,10 +193,10 @@ func (c *UDPConn) handshake(_ context.Context) error {
 		return err
 	}
 
-	if reflect.DeepEqual(buf, c.magic[:]) {
+	if bytes.Equal(buf, c.token[:]) {
 		return nil
 	}
-	return fmt.Errorf("magic not match")
+	return fmt.Errorf("token not match")
 }
 
 func (c *UDPConn) PutRxQueue(data []byte) {
