@@ -486,23 +486,23 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 
 	v, ok := l.clients.Load(key)
 	if !ok {
-		//new client? check magic
-		if len(data) != magicSize {
+		//new client? check token
+		if len(data) != tokenSize {
 			return nil, true
 		}
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
 		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
-		n := copy(uc.magic[:], data)
-		if n != magicSize {
-			panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
+		n := copy(uc.token[:], data)
+		if n != tokenSize {
+			panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 		}
 
 		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
-			l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
+			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 			return nil, true
 		}
-		l.logger.Infof("%v, new conn:%v, magic:%v", l, addr, uc.magic)
+		l.logger.Infof("%v, new conn:%v, token:%v", l, addr, uc.token)
 		l.clients.Store(key, uc)
 		atomic.AddInt64(&l.clientCount, 1)
 		//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
@@ -511,9 +511,9 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 	}
 	uc = v.(*UDPConn)
 
-	//为了避免client重复发送magic时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
-	//这样导致的后果就是业务层不能发送跟 magic 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
-	if len(data) == magicSize && bytes.Equal(data, uc.magic[:]) {
+	//为了避免client重复发送token时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
+	//这样导致的后果就是业务层不能发送跟 token 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
+	if len(data) == tokenSize && bytes.Equal(data, uc.token[:]) {
 		return uc, true
 	}
 	return uc, false

@@ -140,8 +140,8 @@ func (c *UDPConn) readBatchLoopv2() error {
 			buffers[i].Advance(rms[i].N)
 
 			if c.ln != nil { //判断当前c是否是ln 产生的UDPConn
-				//服务端产生的独立UDPConn, 所以需要判断数据是否是magic data, 避免client 重传了magic data
-				if rms[i].N == magicSize && bytes.Equal(buffers[i].Bytes(), c.magic[:magicSize]) {
+				//服务端产生的独立UDPConn, 所以需要判断数据是否是token data, 避免client 重传了token data
+				if rms[i].N == tokenSize && bytes.Equal(buffers[i].Bytes(), c.token[:tokenSize]) {
 					continue
 				}
 

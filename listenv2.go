@@ -155,8 +155,14 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	// 	return
 	// }
 
-	//新的client数据, 第一个必须是握手报文
-	if len(data) != magicSize {
+	//新的client数据, 第一个必须是握手报文token
+	if len(data) != tokenSize {
+		l.logger.Errorf("CreateUDPConnByDstAddr, first data len:%d is not tokenSize:%d, remote:%v", len(data), tokenSize, raddr)
+		return
+	}
+	ok, err := VerifyToken(data)
+	if !ok {
+		l.logger.Errorf("CreateUDPConnByDstAddr, VerifyToken err:%v, remote:%v", err, raddr)
 		return
 	}
 
@@ -168,9 +174,9 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	//查看bind端口的情况: lsof -an -p $pid
 
 	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
-	n := copy(uc.magic[:], data)
-	if n != magicSize {
-		panic(fmt.Sprintf("%v, magic:%v, copy magic fail, n:%d, magicSize:%d", l, uc.magic, n, magicSize))
+	n := copy(uc.token[:], data)
+	if n != tokenSize {
+		panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 	}
 
 	//记录当前socket的接收缓冲区的数据字节数，这部分数据是需要检查其地址是否正确的.
@@ -181,7 +187,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 
 	//if _, err := uc.lconn.WriteTo(data, addr); err != nil {
 	if _, err := uc.lconn.Write(data); err != nil {
-		l.logger.Errorf("%v, magic:%v, write to addr:%v, err:%v", l, addr, uc.magic, addr, err)
+		l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 		lconn.Close()
 		return
 	}
@@ -201,7 +207,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 		go uc.writeBatchLoop()
 	}
 
-	l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, magic:%v", l, addr, uc.magic)
+	l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, token:%v", l, addr, uc.token)
 	l.clients.Store(key, uc)
 	atomic.AddInt64(&l.clientCount, 1)
 	//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
