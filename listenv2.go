@@ -17,7 +17,7 @@ import (
 // 为了复用对象,同时减少一次内存copy, 实现 Listener readBatchLoopv2 -> handleBuffer
 func (l *Listener) readBatchLoopv2() error {
 	var err error
-	InitPool(l.maxPacketSize)
+	InitPool(l.maxPacketSize, DefaultPoolStatEnable)
 	l.logger.Infof("%v, started with readLoopv2(use MyBuffer)....\n", l)
 	defer func() { l.logger.Errorf("%v, readLoopv2(use MyBuffer) quit, err:%v\n", l, err) }()
 

@@ -10,6 +10,10 @@ import (
 	"sync/atomic"
 )
 
+const (
+	DefaultPoolStatEnable = false //默认不开启统计,经测试,开启后,性能没啥影响
+)
+
 type MyBufferPool interface {
 	Get(int) MyBuffer
 	Put(MyBuffer)
@@ -60,6 +64,7 @@ type Buffer struct {
 type pool struct {
 	sync.Pool
 	maxBufferSize int
+	statEnable    bool
 	newAlloc      int64
 	alloc         int64
 	putback       int64
@@ -71,7 +76,9 @@ func (p *pool) Get(n int) MyBuffer {
 		return nil
 	}
 	b := p.Pool.Get().(*Buffer)
-	atomic.AddInt64(&p.alloc, 1)
+	if p.statEnable {
+		atomic.AddInt64(&p.alloc, 1)
+	}
 
 	b.Check()
 	b.Hold()
@@ -83,20 +90,28 @@ func (p *pool) Put(b MyBuffer) {
 		log.Panicf("b.Release()!= 0")
 	}
 	b.Reset()
-	atomic.AddInt64(&p.putback, 1)
+	if p.statEnable {
+		atomic.AddInt64(&p.putback, 1)
+	}
 	p.Pool.Put(b)
 }
 
 func (p *pool) Show() string {
-	return fmt.Sprintf("newAlloc:%d, alloc:%d, putback:%d", atomic.LoadInt64(&p.newAlloc), atomic.LoadInt64(&p.alloc), atomic.LoadInt64(&p.putback))
+	return fmt.Sprintf("maxBufferSize:%d, statEnable:%v, newAlloc:%d, alloc:%d, putback:%d", p.maxBufferSize,
+		p.statEnable, atomic.LoadInt64(&p.newAlloc), atomic.LoadInt64(&p.alloc), atomic.LoadInt64(&p.putback))
 }
 
 var initPoolOnce sync.Once
 
-func InitPool(maxBufferSize int) {
+func InitPool(maxBufferSize int, statEnable bool) {
 	initPoolOnce.Do(func() {
-		p := &pool{maxBufferSize: maxBufferSize}
-		p.Pool = sync.Pool{New: func() interface{} { atomic.AddInt64(&p.newAlloc, 1); return &Buffer{buf: make([]byte, maxBufferSize)} }}
+		p := &pool{maxBufferSize: maxBufferSize, statEnable: statEnable}
+		p.Pool = sync.Pool{New: func() interface{} {
+			if p.statEnable {
+				atomic.AddInt64(&p.newAlloc, 1)
+			}
+			return &Buffer{buf: make([]byte, maxBufferSize)}
+		}}
 		SetDefaultBufferPool(p)
 	})
 }

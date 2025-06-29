@@ -52,7 +52,7 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	if c.standalone {
 		if c.readBatchs > 0 {
 			//go uc.ReadBatchLoop(uc.rxhandler)
-			InitPool(c.maxBufSize)
+			InitPool(c.maxBufSize, DefaultPoolStatEnable)
 			go c.readBatchLoopv2()
 		}
 		if c.writeBatchs > 0 {
