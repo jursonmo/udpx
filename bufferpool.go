@@ -89,7 +89,7 @@ func (p *pool) Put(b MyBuffer) {
 	if b.Release() != 0 {
 		log.Panicf("b.Release()!= 0")
 	}
-	b.Reset()
+	b.Reset() // reset b.addr, 保证gc时,标志存活的对象少一些。
 	if p.statEnable {
 		atomic.AddInt64(&p.putback, 1)
 	}
