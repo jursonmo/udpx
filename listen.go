@@ -12,12 +12,10 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -354,45 +352,53 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	l.accept = make(chan *UDPConn, 512)
 
 	var lc = net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
-			if err := c.Control(func(fd uintptr) {
-				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-			}); err != nil {
-				panic(err)
-				//return err
-			}
+		// Control: func(network, address string, c syscall.RawConn) error {
+		// 	var opErr error
+		// 	if err := c.Control(func(fd uintptr) {
+		// 		opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		// 	}); err != nil {
+		// 		panic(err)
+		// 		//return err
+		// 	}
 
-			// if err := c.Control(func(fd uintptr) {
-			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-			// }); err != nil {
-			// 	panic(err)
-			// 	return err
-			// }
+		// if err := c.Control(func(fd uintptr) {
+		// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		// }); err != nil {
+		// 	panic(err)
+		// 	return err
+		// }
 
-			// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
-			// if err := c.Control(func(fd uintptr) {
-			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_RCVBUF, 1024*1024*5)
-			// }); err != nil {
-			// 	return err
-			// }
-			// if err := c.Control(func(fd uintptr) {
-			// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_SNDBUF, 1024*1024*5)
-			// }); err != nil {
-			// 	return err
-			// }
+		// //设置缓冲区大小为10MB, listener 端负责收发很多client的数据，所以可以设置大点
+		// if err := c.Control(func(fd uintptr) {
+		// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_RCVBUF, 1024*1024*5)
+		// }); err != nil {
+		// 	return err
+		// }
+		// if err := c.Control(func(fd uintptr) {
+		// 	opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, syscall.SO_SNDBUF, 1024*1024*5)
+		// }); err != nil {
+		// 	return err
+		// }
 
-			//设置IP_PKTINFO
-			if IP_PKTINFO_ENABLE {
-				if err := c.Control(func(fd uintptr) {
-					opErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
-				}); err != nil {
-					panic(err)
-				}
-			}
-			return opErr
-		},
+		// //设置IP_PKTINFO
+		// if IP_PKTINFO_ENABLE {
+		// 	if err := c.Control(func(fd uintptr) {
+		// 		opErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
+		// 	}); err != nil {
+		// 		panic(err)
+		// 	}
+		// }
+		// return opErr
+		// },
 	}
+
+	//封装下Control回调函数, 方便链式添加socket选项回调, 任何一个socket选项回调失败, 都直接中断并返回。
+	lc.Control = ReuseportControl()
+	if IP_PKTINFO_ENABLE {
+		l.logger.Infof("listener id:%d, set IP_PKTINFO_ENABLE", l.id)
+		lc.Control = MustIpPktInfoControl(lc.Control)
+	}
+
 	//conn, err := net.ListenUDP("udp", udpAddress)
 	conn, err := lc.ListenPacket(ctx, network, addr)
 	if err != nil {
