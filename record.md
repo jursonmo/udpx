@@ -78,7 +78,9 @@ cat /proc/net/udp
   + 3. 上面2的先SO_REUSEPOR listen, 再 connect的实现方式是有缺陷的，一、创建listen 之后 connect之前，已经有数据分配到这个socket了，那么需要检查下数据的源IP是否是connect的IP一致，不一致就直接丢弃(Done)。 二、添加一个SO_REUSEPOR listen socket时，会打破udp 负载组的大小，导致原先旧client的数据原来是交给udp server 2处理的，可能以后会交给 udp server 3处理了。因为内核的分发算法 (核心是哈希 + 取模，), 新增一个SO_REUSEPOR listen socket, 取模的基数改变了。但是我的实现是服务器产生的每个UDPConn都是connect绑定唯一的五元组的，也就是client的除了第一个握手报文交给listener 处理，后续的报文都是交给指定的UDPConn处理的，所以不用考虑client的数据交给不同listener处理的问题。(Done)
   + 4. 补充下知识：UDP 本身是无连接的, 没有“会话粘性”保证： 内核 SO_REUSEPORT 的实现只保证在套接字组大小稳定时，相同源地址的数据包去往同一个套接字。一旦组大小改变，这种映射关系就被打破了。内核不会为了维持旧客户端与旧套接字的关联而做特殊处理。所以添加或者关闭 SO_REUSEPOR listener 会对原来的client的数据有影响的，这是反而更加显得用connect方式生成独立的UDPConn的必要性，它保证后续的报文都送到这个独立的UDPConn, 而不是送到可能不固定的listener conn. 
 
-  17. TODO: listener 生成的独立UDPConn, 需要单独设置自己的收发缓冲区。(Done: 但是收发缓冲区设置有点大, 目前只是为了高性能收发)
+  17. TODO: listener 生成的独立UDPConn, 需要单独设置自己的收发缓冲区。(Done: 但是收发缓冲区设置有点大, 目前只是为了高性能收发, 不适合大量的连接)
+
+  18.  握手报文使用动态token, 避免固定token容易识破而被攻击。(Done at 2025-06-27)
   
     
 
