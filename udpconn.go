@@ -150,7 +150,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 		oneshotRead: true, //默认为true, udp 就应该是oneshotRead
 		standalone:  standalone,
 	}
-	uc.rxhandler = uc.handlePacket
+	uc.rxhandler = uc.handlePacket //原始非batch模式: readLoop()-->handlePacket()-->rxhandler
 	for _, opt := range opts {
 		opt(uc)
 	}
@@ -171,9 +171,12 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	gLogger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
+func (c *UDPConn) isTokenData(data []byte) bool {
+	return len(data) == tokenSize && bytes.Equal(data, c.token[:tokenSize])
+}
 
 // 握手, 目前暂时只发送一次magic. 不会重复发送, 避免服务器收到两次相同的magic。
-// TODO: 服务器保存token,每次收到tokenSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。
+// TODO: 服务器保存token,每次收到tokenSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。(DONE)
 func (c *UDPConn) handshake(_ context.Context) error {
 	//_, err := c.lconn.WriteTo(c.token[:], c.raddr)
 	_, err := c.lconn.Write(c.token[:])

@@ -305,7 +305,7 @@ func (l *Listener) newUDPConnBindAddr(laddr *net.UDPAddr, raddr *net.UDPAddr) (*
 	//TODO: 想侦听再Connect()有个问题，这一瞬间如果有新的数据发送到这个处于侦听的conn，会出现啥异常情况？
 	//connect() 之前收到的数据，都还在队列里等着被 recvfrom() 取走，connect() 不会把它们扔掉。
 	//connect() 只是给未来到达的数据报设置了一个新的“门卫规则”。
-	//所以要检查下数据的源地址是否是connect的地址, 但是每个数据都要检查下，也没必要，只需要检查当前connecth后socket的队列字节长度即可
+	//所以要检查下数据的源地址是否是connect的地址, 但是每个数据都要检查下，也没必要，只需要检查当前connect后socket的队列字节长度即可
 	//如果不是connect的地址，就会被丢弃, 不能交给上层业务，
 
 	rawconn, err := uc.SyscallConn()

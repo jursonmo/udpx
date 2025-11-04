@@ -1,7 +1,6 @@
 package udpx
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -140,11 +139,6 @@ func (c *UDPConn) readBatchLoopv2() error {
 			buffers[i].Advance(rms[i].N)
 
 			if c.ln != nil { //判断当前c是否是ln 产生的UDPConn
-				//服务端产生的独立UDPConn, 所以需要判断数据是否是token data, 避免client 重传了token data
-				if rms[i].N == tokenSize && bytes.Equal(buffers[i].Bytes(), c.token[:tokenSize]) {
-					continue
-				}
-
 				//只需要检查独立UPConn在bind 和 connect 之间已经缓存到socket的那部分数据
 				if checkLen < c.needCheck {
 					checkLen += rms[i].N
@@ -161,9 +155,19 @@ func (c *UDPConn) readBatchLoopv2() error {
 }
 
 func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
-	//todo: check control packet or data packet,
-	//但是我认为，不应该在这里做控制层相关的业务，因为它只需提供连接的收发操作即可
-	//如果需要握手验证和心跳，应该是在业务层做，或者在业务层和底层之间加一层来实现协议格式和控制协议报文
+	//check control packet or data packet, if control packet, then handle it, else put to rxqueue
+	//TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
+	if c.isTokenData(b.Bytes()) {
+		// UDPConn已经创建，一般不会再收到握手报文token data, 但是对端可能重传, 所以这里需要处理
+		gLogger.Warnf("repeat recv token data:%v, client:%v->%v \n", b.Bytes(), c.LocalAddr(), c.RemoteAddr())
+		//回复token握手数据
+		//_, err := c.lconn.Write(b.Bytes()) //服务端产生的UDPConn, 如果不绑定对端地址, 则Write会失败, 需要使用WriteTo方法, 指定对端地址
+		_, err := c.Write(b.Bytes()) //c.Write() 里会根据具体情况调用相应的发送方法。
+		if err != nil {
+			gLogger.Errorf("reply token data failed, err:%v, client:%v->%v \n", err, c.LocalAddr(), c.RemoteAddr())
+		}
+		return err
+	}
 
 	//非阻塞模式,避免某个UDPConn 的数据没有被处理而阻塞了listener 或者 UDPConn 继续接受数据
 	select {

@@ -1,7 +1,6 @@
 package udpx
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -472,10 +471,18 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 	}
 
 	uc, isCtrlData := l.getUDPConn(addr, data)
-	if isCtrlData {
-		//data 是初始化用的控制数据，不需要处理
+	if uc == nil || isCtrlData {
 		return
 	}
+
+	//重传的握手token数据？
+	if uc.isTokenData(data) {
+		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
+			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
+			return
+		}
+	}
+
 	if uc.rxhandler != nil {
 		uc.rxhandler(data)
 	}
@@ -523,11 +530,12 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 	}
 	uc = v.(*UDPConn)
 
-	//为了避免client重复发送token时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
-	//这样导致的后果就是业务层不能发送跟 token 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
-	if len(data) == tokenSize && bytes.Equal(data, uc.token[:]) {
-		return uc, true
-	}
+	// PutRxQueue2 上传到业务层前会判断是否是控制数据
+	// //为了避免client重复发送token时，服务器误以为是业务数据而网上送, 这里保险点再判断一次, 如果是控制数据，就不需要处理了
+	// //这样导致的后果就是业务层不能发送跟 token 一样是数据，否则会被当成是控制数据；TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
+	// if uc.isTokenData(data) {
+	// 	return uc, true
+	// }
 	return uc, false
 }
 

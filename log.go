@@ -12,6 +12,11 @@ type Logger interface {
 
 var gLogger Logger = StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())}
 
+// SetGlobalLogger sets the global logger.
+func SetGlobalLogger(l Logger) {
+	gLogger = l
+}
+
 type StdLogger struct {
 	Logger *log.Logger
 }
