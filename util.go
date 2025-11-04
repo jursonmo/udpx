@@ -60,6 +60,7 @@ func setSocketBuf(conn *net.UDPConn, bufSize int) error {
 	gLogger.Infof("socket rmemDefault:%d, need to set bufSize:%d", rmemDefault, bufSize)
 	//如果比默认值大，才设置。 如果系统的rmem默认值比较大,就不用设置，以默认值为准
 	if bufSize > rmemDefault {
+		//TODO: 如果conn是CreateUDPConnByDstAddr, 这里的conn.RemoteAddr() 是nil, 怎么给它设置raddr？
 		gLogger.Infof("c:%s->%s SetReadBuffer bufSize:%d", conn.LocalAddr(), conn.RemoteAddr(), bufSize)
 		err := conn.SetReadBuffer(bufSize)
 		if err != nil {
