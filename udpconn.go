@@ -24,6 +24,7 @@ var fixedToken [tokenSize]byte = [tokenSize]byte{0x01, 0x02, 0x03, 0x04}
 type UDPConn struct {
 	mux    sync.Mutex
 	ln     *Listener
+	logger Logger
 	client bool //true表示lconn is conneted(绑定了目的地址), 即可以直接用Write，不需要WriteTo
 	//standalone true表示是独立的udpconn, 即自己的lconn负责收发数据等任务, 比如client dial 生成的UDPConn, 它就是独立的udpconn, standalone 为true, 就不需要listener 来帮忙收发。
 	// 一般listener产生的UDPConn, 它们的收发工作都是由listener lconn 负责的，UDPConn write时只是把数据放到 ln txqueue 里而已。
@@ -80,6 +81,12 @@ type checkTimeout struct {
 }
 
 type UDPConnOpt func(*UDPConn)
+
+func WithUCLogger(logger Logger) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.logger = logger
+	}
+}
 
 func WithRxQueueLen(n int) UDPConnOpt {
 	return func(u *UDPConn) {
