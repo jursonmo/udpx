@@ -74,7 +74,7 @@ func verifyToken(token []byte, secret string, window int) (bool, error) {
 	currentTime := uint16(now)
 
 	if tokenTime-currentTime > uint16(window) {
-		return false, fmt.Errorf("Token timestamp too far from now, tokenTime: %d, currentTime: %d, window: %d\n", tokenTime, currentTime, window) // 时间戳相差太远
+		return false, fmt.Errorf("token timestamp too far from now, tokenTime: %d, currentTime: %d, window: %d", tokenTime, currentTime, window) // 时间戳相差太远
 	}
 
 	// 准备用于计算摘要的数据: secret + 部分时间戳
