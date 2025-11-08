@@ -346,7 +346,9 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 		return 0, ErrConnClosed
 	}
 }
-
+func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
+	return c.lconn.WriteTo(b, addr)
+}
 func (c *UDPConn) Write(b []byte) (n int, err error) {
 	//client conn, 应该是判断是否独立收发的
 	if /*c.client*/ c.standalone {
