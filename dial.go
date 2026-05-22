@@ -160,12 +160,18 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 	if c.isTokenData(b.Bytes()) {
 		// UDPConn已经创建，一般不会再收到握手报文token data, 但是对端可能重传, 所以这里需要处理
 		gLogger.Warnf("repeat recv token data:%v, client:%v->%v \n", b.Bytes(), c.LocalAddr(), c.RemoteAddr())
+		//fixbug: 客户端的UDPConn收到重复 token，直接丢弃，绝对不能再 Write(token) 给server, 否则 client/server 都会互相 echo token 数据，导致死循环打印:repeat recv token data:
+		if c.ln == nil {
+			Release(b)
+			return nil
+		}
 		//回复token握手数据
 		//_, err := c.lconn.Write(b.Bytes()) //服务端产生的UDPConn, 如果不绑定对端地址, 则Write会失败, 需要使用WriteTo方法, 指定对端地址
 		_, err := c.Write(b.Bytes()) //c.Write() 里会根据具体情况调用相应的发送方法。
 		if err != nil {
 			gLogger.Errorf("reply token data failed, err:%v, client:%v->%v \n", err, c.LocalAddr(), c.RemoteAddr())
 		}
+		Release(b)
 		return err
 	}
 
