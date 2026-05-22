@@ -479,8 +479,8 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 	if uc.isTokenData(data) {
 		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
 			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
-			return
 		}
+		return //token数据不能忘上送了
 	}
 
 	if uc.rxhandler != nil {
