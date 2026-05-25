@@ -1,6 +1,7 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -344,7 +345,7 @@ func LnWithTxBlocked(b bool) ListenerOpt {
 }
 
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen, dead: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -475,16 +476,33 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 		return
 	}
 
-	//重传的握手token数据？
-	if uc.isTokenData(data) {
-		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
-			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
-		}
-		return //token数据不能忘上送了
+	_, typ, payload, ok := decodeFrame(data)
+	if !ok {
+		l.logger.Warnf("%v, drop invalid udpx frame from addr:%v, len:%d", l, addr, len(data))
+		return
 	}
 
-	if uc.rxhandler != nil {
-		uc.rxhandler(data)
+	switch typ {
+	case frameTypeData:
+		if uc.rxhandler != nil {
+			uc.rxhandler(payload)
+		}
+	case frameTypeHello:
+		if bytes.Equal(payload, uc.token[:]) {
+			if _, err := uc.lconn.WriteTo(encodeFrame(frameTypeHelloAck, uc.token[:]), addr); err != nil {
+				l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
+			}
+		}
+	case frameTypePing:
+		if _, err := uc.lconn.WriteTo(encodeFrame(frameTypePong, payload), addr); err != nil {
+			l.logger.Errorf("%v, pong write to addr:%v, err:%v", l, addr, err)
+		}
+	case frameTypeStats:
+		if stats, err := decodeStatsPayload(payload); err == nil {
+			uc.setPeerStats(stats)
+		}
+	case frameTypeClose:
+		uc.Close()
 	}
 }
 
@@ -500,10 +518,11 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 	v, ok := l.clients.Load(key)
 	if !ok {
 		//new client? check token
-		if len(data) != tokenSize {
+		token, ok := decodeHelloFrame(data)
+		if !ok {
 			return nil, true
 		}
-		ok, err := VerifyToken(data)
+		ok, err := VerifyToken(token)
 		if !ok {
 			l.logger.Errorf("getUDPConn, VerifyToken err:%v, remote:%v", err, addr)
 			return nil, true
@@ -512,12 +531,12 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
 		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
-		n := copy(uc.token[:], data)
+		n := copy(uc.token[:], token)
 		if n != tokenSize {
 			panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 		}
 
-		if _, err := uc.lconn.WriteTo(data, addr); err != nil {
+		if _, err := uc.lconn.WriteTo(encodeFrame(frameTypeHelloAck, token), addr); err != nil {
 			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 			return nil, true
 		}
@@ -577,6 +596,7 @@ func (l *Listener) Addr() net.Addr {
 func (l *Listener) Close() error {
 	l.Lock()
 	if l.closed {
+		l.Unlock()
 		return ErrLnClosed
 	}
 	l.closed = true

@@ -1,6 +1,7 @@
 package udpx
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -156,29 +157,65 @@ func (c *UDPConn) readBatchLoopv2() error {
 
 func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 	//check control packet or data packet, if control packet, then handle it, else put to rxqueue
-	//TODO: 可以在业务数据上再加一个头部来区分业务数据和控制数据
-	if c.isTokenData(b.Bytes()) {
-		// UDPConn已经创建，一般不会再收到握手报文token data, 但是对端可能重传, 所以这里需要处理
-		gLogger.Warnf("repeat recv token data:%v, client:%v->%v \n", b.Bytes(), c.LocalAddr(), c.RemoteAddr())
-		//fixbug: 客户端的UDPConn收到重复 token，直接丢弃，绝对不能再 Write(token) 给server, 否则 client/server 都会互相 echo token 数据，导致死循环打印:repeat recv token data:
-		if c.ln == nil {
+	_, typ, payload, ok := decodeFrame(b.Bytes())
+	if !ok {
+		gLogger.Warnf("drop invalid udpx frame, len:%d, client:%v->%v\n", len(b.Bytes()), c.LocalAddr(), c.RemoteAddr())
+		Release(b)
+		return nil
+	}
+
+	switch typ {
+	case frameTypeData:
+		if !trimFrameHeader(b) {
+			payloadBuffer := GetMyBuffer(len(payload))
+			if _, err := payloadBuffer.Write(payload); err != nil {
+				Release(payloadBuffer)
+				Release(b)
+				return err
+			}
 			Release(b)
-			return nil
+			b = payloadBuffer
 		}
-		//回复token握手数据
-		//_, err := c.lconn.Write(b.Bytes()) //服务端产生的UDPConn, 如果不绑定对端地址, 则Write会失败, 需要使用WriteTo方法, 指定对端地址
-		_, err := c.Write(b.Bytes()) //c.Write() 里会根据具体情况调用相应的发送方法。
-		if err != nil {
-			gLogger.Errorf("reply token data failed, err:%v, client:%v->%v \n", err, c.LocalAddr(), c.RemoteAddr())
+	case frameTypeHello:
+		// 服务端连接收到重复 Hello，说明客户端可能没收到 HelloAck，可以重发 ack；客户端侧直接丢弃。
+		if c.ln != nil && bytes.Equal(payload, c.token[:]) {
+			_, err := c.writeControlFrame(frameTypeHelloAck, c.token[:])
+			Release(b)
+			return err
 		}
 		Release(b)
+		return nil
+	case frameTypeHelloAck:
+		Release(b)
+		return nil
+	case frameTypePing:
+		_, err := c.writeControlFrame(frameTypePong, payload)
+		Release(b)
 		return err
+	case frameTypePong:
+		Release(b)
+		return nil
+	case frameTypeClose:
+		Release(b)
+		c.Close()
+		return nil
+	case frameTypeStats:
+		if stats, err := decodeStatsPayload(payload); err == nil {
+			c.setPeerStats(stats)
+		}
+		Release(b)
+		return nil
+	default:
+		gLogger.Warnf("drop unknown udpx frame type:%d, client:%v->%v\n", typ, c.LocalAddr(), c.RemoteAddr())
+		Release(b)
+		return nil
 	}
 
 	//非阻塞模式,避免某个UDPConn 的数据没有被处理而阻塞了listener 或者 UDPConn 继续接受数据
 	select {
 	case c.rxqueue <- b:
 		c.rxPackets += 1
+		c.rxDataPkts += 1
 	default:
 		c.rxDropPkts += 1
 		//c.rxDropBytes += int64(len(b.Bytes()))

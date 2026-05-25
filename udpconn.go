@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
 )
 
@@ -51,6 +52,10 @@ type UDPConn struct {
 	txPackets   int64
 	txDropPkts  int64
 	txDropBytes int64
+	txDataPkts  int64
+	rxDataPkts  int64
+	peerStats   ConnStats
+	peerStatsMu sync.RWMutex
 	rxqueue     chan MyBuffer
 	rxqueueB    chan []byte
 	rxhandler   func([]byte)
@@ -178,24 +183,19 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	gLogger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
-func (c *UDPConn) isTokenData(data []byte) bool {
-	return len(data) == tokenSize && bytes.Equal(data, c.token[:tokenSize])
-}
 
-// 握手, 目前暂时只发送一次magic. 不会重复发送, 避免服务器收到两次相同的magic。
-// TODO: 服务器保存token,每次收到tokenSize的数据就要判断是否是client重复发送的握手数据, 还是正常业务数据。(DONE)
+// 握手报文使用 frameTypeHello/frameTypeHelloAck，避免控制报文和业务报文混淆。
 func (c *UDPConn) handshake(_ context.Context) error {
-	//_, err := c.lconn.WriteTo(c.token[:], c.raddr)
-	_, err := c.lconn.Write(c.token[:])
+	_, err := c.lconn.Write(encodeFrame(frameTypeHello, c.token[:]))
 	if err != nil {
 		gLogger.Errorf("send token err:%v", err)
 		return err
 	}
-	buf := make([]byte, len(c.token))
+	buf := make([]byte, c.maxBufSize)
 	c.lconn.SetDeadline(time.Now().Add(time.Second * 2))
 	defer c.lconn.SetDeadline(time.Time{})
 	//_, raddr, err := c.lconn.ReadFrom(buf)
-	_, err = c.lconn.Read(buf)
+	n, err := c.lconn.Read(buf)
 	if err != nil {
 		if e, ok := err.(net.Error); ok && e.Temporary() {
 			//todo
@@ -203,7 +203,8 @@ func (c *UDPConn) handshake(_ context.Context) error {
 		return err
 	}
 
-	if bytes.Equal(buf, c.token[:]) {
+	token, ok := decodeHelloAckFrame(buf[:n])
+	if ok && bytes.Equal(token, c.token[:]) {
 		return nil
 	}
 	return fmt.Errorf("token not match")
@@ -276,7 +277,44 @@ var ErrShortRead = errors.New("short Read error, Read(buf) should parameters buf
 func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	//客户端读模式(应该判断是否是独立收发的)，又不启用batch, 就一个个读
 	if /*c.client*/ c.standalone && c.readBatchs == 0 {
-		return c.lconn.Read(buf)
+		raw := make([]byte, c.maxBufSize)
+		for {
+			rn, err := c.lconn.Read(raw)
+			if err != nil {
+				return 0, err
+			}
+			_, typ, payload, ok := decodeFrame(raw[:rn])
+			if !ok {
+				continue
+			}
+			switch typ {
+			case frameTypeData:
+				n = copy(buf, payload)
+				if n < len(payload) && c.oneshotRead {
+					return n, fmt.Errorf("user_buf_len:%d, have copyed:%d, remain:%d, %w", len(buf), n, len(payload)-n, ErrShortRead)
+				}
+				c.rxPackets++
+				c.rxDataPkts++
+				return n, nil
+			case frameTypeHello:
+				if c.ln != nil && bytes.Equal(payload, c.token[:]) {
+					if _, err := c.writeControlFrame(frameTypeHelloAck, c.token[:]); err != nil {
+						return 0, err
+					}
+				}
+			case frameTypePing:
+				if _, err := c.writeControlFrame(frameTypePong, payload); err != nil {
+					return 0, err
+				}
+			case frameTypeClose:
+				c.Close()
+				return 0, ErrConnClosed
+			case frameTypeStats:
+				if stats, err := decodeStatsPayload(payload); err == nil {
+					c.setPeerStats(stats)
+				}
+			}
+		}
 	}
 	user_buf_len := len(buf)
 	//这里有两种处理，
@@ -309,6 +347,8 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 			return 0, errors.New("rxqueueB closed")
 		}
 		n = copy(buf, b)
+		c.rxPackets++
+		c.rxDataPkts++
 		return
 	case b, ok := <-c.rxqueue: //MyBuffer rxqueue
 		if !ok {
@@ -347,13 +387,39 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	}
 }
 func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	return c.lconn.WriteTo(b, addr)
+	if len(b)+frameHeaderLen > c.maxBufSize {
+		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(b), frameHeaderLen, c.maxBufSize)
+	}
+	raw := encodeFrame(frameTypeData, b)
+	_, err = c.lconn.WriteTo(raw, addr)
+	if err != nil {
+		return 0, err
+	}
+	c.txDataPkts++
+	return len(b), nil
 }
 func (c *UDPConn) Write(b []byte) (n int, err error) {
+	if len(b)+frameHeaderLen > c.maxBufSize {
+		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(b), frameHeaderLen, c.maxBufSize)
+	}
+	raw := encodeFrame(frameTypeData, b)
+	_, err = c.writeRaw(raw)
+	if err != nil {
+		return 0, err
+	}
+	c.txDataPkts++
+	return len(b), nil
+}
+
+func (c *UDPConn) writeControlFrame(typ byte, payload []byte) (n int, err error) {
+	return c.writeRaw(encodeFrame(typ, payload))
+}
+
+func (c *UDPConn) writeRaw(b []byte) (n int, err error) {
 	//client conn, 应该是判断是否独立收发的
 	if /*c.client*/ c.standalone {
 		if c.writeBatchs > 0 {
-			return c.WriteWithBatch(b)
+			return c.writeRawWithBatch(b)
 		}
 		n, err = c.lconn.Write(b)
 		if err != nil {
@@ -370,7 +436,7 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 		return 0, ErrConnClosed
 	}
 	if c.ln.WriteBatchAble() {
-		return c.WriteWithBatch(b)
+		return c.writeRawWithBatch(b)
 	}
 	n, err = c.lconn.WriteTo(b, c.raddr)
 	if err != nil {
@@ -381,6 +447,33 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 		c.ln.txPackets++
 	}
 	return
+}
+
+func (c *UDPConn) LocalStats() ConnStats {
+	return ConnStats{
+		TxPackets:   uint64(c.txDataPkts),
+		RxPackets:   uint64(c.rxDataPkts),
+		RxDropPkts:  uint64(c.rxDropPkts),
+		TxDropPkts:  uint64(c.txDropPkts),
+		TimestampMs: nowUnixMilli(),
+	}
+}
+
+func (c *UDPConn) PeerStats() ConnStats {
+	c.peerStatsMu.RLock()
+	defer c.peerStatsMu.RUnlock()
+	return c.peerStats
+}
+
+func (c *UDPConn) SendStats() error {
+	_, err := c.writeControlFrame(frameTypeStats, encodeStatsPayload(c.LocalStats()))
+	return err
+}
+
+func (c *UDPConn) setPeerStats(s ConnStats) {
+	c.peerStatsMu.Lock()
+	c.peerStats = s
+	c.peerStatsMu.Unlock()
 }
 
 func (c *UDPConn) writeBatchLoop() {

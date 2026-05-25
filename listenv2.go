@@ -92,6 +92,7 @@ func (l *Listener) readBatchLoopv2() error {
 func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer) {
 	if dstAddr != nil {
 		l.CreateUDPConnByDstAddr(dstAddr, addr, b.Bytes())
+		Release(b)
 		return
 	}
 
@@ -111,7 +112,9 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 		} else {
 			l.rxPackets++
 		}
+		return
 	}
+	Release(b)
 }
 func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, data []byte) {
 	//如何获取到了数据报文的目的地址，可以直接创建新的UDPConn
@@ -129,6 +132,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 		n, err := b.Write(data)
 		if err != nil {
 			l.logger.Errorf("%v, MyBuffer Write data err:%v\n", l, err)
+			Release(b)
 			return
 		}
 		if n != len(data) {
@@ -155,12 +159,13 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	// 	return
 	// }
 
-	//新的client数据, 第一个必须是握手报文token
-	if len(data) != tokenSize {
-		l.logger.Errorf("CreateUDPConnByDstAddr, first data len:%d is not tokenSize:%d, remote:%v", len(data), tokenSize, raddr)
+	//新的client数据, 第一个必须是握手 Hello 报文
+	token, ok := decodeHelloFrame(data)
+	if !ok {
+		l.logger.Errorf("CreateUDPConnByDstAddr, first data is not hello frame, len:%d, remote:%v", len(data), raddr)
 		return
 	}
-	ok, err := VerifyToken(data)
+	ok, err := VerifyToken(token)
 	if !ok {
 		l.logger.Errorf("CreateUDPConnByDstAddr, VerifyToken err:%v, remote:%v", err, raddr)
 		return
@@ -174,7 +179,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	//查看bind端口的情况: lsof -an -p $pid
 
 	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
-	n := copy(uc.token[:], data)
+	n := copy(uc.token[:], token)
 	if n != tokenSize {
 		panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 	}
@@ -186,7 +191,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	}
 
 	//if _, err := uc.lconn.WriteTo(data, addr); err != nil {
-	if _, err := uc.lconn.Write(data); err != nil {
+	if _, err := uc.lconn.Write(encodeFrame(frameTypeHelloAck, token)); err != nil {
 		l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 		lconn.Close()
 		return
