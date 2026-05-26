@@ -42,10 +42,31 @@ func parseVerType(vt byte) (version byte, typ byte) {
 
 func encodeFrame(typ byte, payload []byte) []byte {
 	b := make([]byte, frameHeaderLen+len(payload))
-	binary.BigEndian.PutUint16(b[:2], frameMagic)
-	b[2] = makeVerType(frameVersion, typ)
+	writeFrameHeader(b[:frameHeaderLen], typ)
 	copy(b[frameHeaderLen:], payload)
 	return b
+}
+
+func writeFrameHeader(b []byte, typ byte) {
+	binary.BigEndian.PutUint16(b[:2], frameMagic)
+	b[2] = makeVerType(frameVersion, typ)
+}
+
+func newFrameBuffer(maxPacketSize int, typ byte, payload []byte) (MyBuffer, error) {
+	if len(payload)+frameHeaderLen > maxPacketSize {
+		return nil, fmt.Errorf("payload len:%d plus frame header:%d > max packet size:%d", len(payload), frameHeaderLen, maxPacketSize)
+	}
+
+	b := GetMyBuffer(frameHeaderLen + len(payload))
+	buf := b.Buffer()
+	writeFrameHeader(buf[:frameHeaderLen], typ)
+	b.Advance(frameHeaderLen)
+
+	if _, err := b.Write(payload); err != nil {
+		Release(b)
+		return nil, err
+	}
+	return b, nil
 }
 
 func decodeFrame(b []byte) (version byte, typ byte, payload []byte, ok bool) {

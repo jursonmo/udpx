@@ -215,7 +215,7 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, token:%v", l, addr, uc.token)
 	l.clients.Store(key, uc)
 	atomic.AddInt64(&l.clientCount, 1)
-	//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
+	//TODO:这里如果阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
 	l.accept <- uc
 }
 

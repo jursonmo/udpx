@@ -349,6 +349,7 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 	for _, opt := range opts {
 		opt(l)
 	}
+	InitPool(l.maxPacketSize, DefaultPoolStatEnable)
 	l.accept = make(chan *UDPConn, 512)
 
 	var lc = net.ListenConfig{

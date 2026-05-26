@@ -13,19 +13,18 @@ var ErrTooBig = errors.New("bigger than Buffer MaxSize")
 
 //var ErrTxQueueFull = errors.New("Err txqueueu is full")
 
-// use listener write batch, 把data 转换成MyBuffer, 然后放到tx队列里
-func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
-	if len(data)+frameHeaderLen > c.maxBufSize {
-		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(data), frameHeaderLen, c.maxBufSize)
-	}
-	raw := encodeFrame(frameTypeData, data)
-	_, err = c.writeRawWithBatch(raw)
-	if err != nil {
-		return 0, err
-	}
-	c.txDataPkts++
-	return len(data), nil
-}
+// func (c *UDPConn) WriteWithBatch(data []byte) (n int, err error) {
+// 	if len(data)+frameHeaderLen > c.maxBufSize {
+// 		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(data), frameHeaderLen, c.maxBufSize)
+// 	}
+// 	raw := encodeFrame(frameTypeData, data)
+// 	_, err = c.writeRawWithBatch(raw)
+// 	if err != nil {
+// 		return 0, err
+// 	}
+// 	c.txDataPkts++
+// 	return len(data), nil
+// }
 
 func (c *UDPConn) writeRawWithBatch(data []byte) (n int, err error) {
 	b := GetMyBuffer(len(data))

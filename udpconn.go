@@ -166,6 +166,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	for _, opt := range opts {
 		opt(uc)
 	}
+	InitPool(uc.maxBufSize, DefaultPoolStatEnable)
 	uc.rxqueue = make(chan MyBuffer, uc.rxqueuelen)
 	uc.rxqueueB = make(chan []byte, uc.rxqueuelen)
 	uc.pc = ipv4.NewPacketConn(lconn)
@@ -387,11 +388,12 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	}
 }
 func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	if len(b)+frameHeaderLen > c.maxBufSize {
-		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(b), frameHeaderLen, c.maxBufSize)
+	fb, err := newFrameBuffer(c.maxBufSize, frameTypeData, b)
+	if err != nil {
+		return 0, pkgerr.WithMessage(err, "new data frame buffer failed")
 	}
-	raw := encodeFrame(frameTypeData, b)
-	_, err = c.lconn.WriteTo(raw, addr)
+	_, err = c.lconn.WriteTo(fb.Bytes(), addr)
+	Release(fb)
 	if err != nil {
 		return 0, err
 	}
@@ -399,11 +401,11 @@ func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	return len(b), nil
 }
 func (c *UDPConn) Write(b []byte) (n int, err error) {
-	if len(b)+frameHeaderLen > c.maxBufSize {
-		return 0, pkgerr.WithMessagef(ErrTooBig, "payload len:%d plus frame header:%d > max packet size:%d", len(b), frameHeaderLen, c.maxBufSize)
+	fb, err := newFrameBuffer(c.maxBufSize, frameTypeData, b)
+	if err != nil {
+		return 0, pkgerr.WithMessage(err, "new data frame buffer failed")
 	}
-	raw := encodeFrame(frameTypeData, b)
-	_, err = c.writeRaw(raw)
+	_, err = c.writeFrameBuffer(fb)
 	if err != nil {
 		return 0, err
 	}
@@ -413,6 +415,60 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 
 func (c *UDPConn) writeControlFrame(typ byte, payload []byte) (n int, err error) {
 	return c.writeRaw(encodeFrame(typ, payload))
+}
+
+func (c *UDPConn) writeFrameBuffer(b MyBuffer) (n int, err error) {
+	if c.standalone {
+		if c.writeBatchs > 0 {
+			n = len(b.Bytes())
+			err = c.PutTxQueue(b, c.txBlocked)
+			if err != nil {
+				if err != ErrTxQueueFull {
+					Release(b)
+				}
+				return 0, err
+			}
+			return n, nil
+		}
+		n, err = c.lconn.Write(b.Bytes())
+		Release(b)
+		if err != nil {
+			c.txDropPkts++
+		} else {
+			c.txPackets++
+		}
+		return
+	}
+	//the conn that accepted by listener
+	//由listener accept产生的UDPConn, 发送前判断是否是关闭状态. dial 产生UDPConn，如果已经关闭，底层socket 会报错返回，不需要判断
+	if c.closed {
+		Release(b)
+		return 0, ErrConnClosed
+	}
+	if c.ln.WriteBatchAble() {
+		b.SetAddr(c.raddr)
+		n = len(b.Bytes())
+		err = c.ln.PutTxQueue(b, c.txBlocked)
+		if err != nil {
+			if err != ErrTxQueueFull {
+				Release(b)
+			}
+			c.txDropPkts++
+			return 0, err
+		}
+		c.txPackets++
+		return n, nil
+	}
+	n, err = c.lconn.WriteTo(b.Bytes(), c.raddr)
+	Release(b)
+	if err != nil {
+		c.txDropPkts++
+		c.ln.txDropPkts++
+	} else {
+		c.txPackets++
+		c.ln.txPackets++
+	}
+	return
 }
 
 func (c *UDPConn) writeRaw(b []byte) (n int, err error) {
