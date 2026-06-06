@@ -213,12 +213,13 @@ func (bw *PCBufioWriter) Write(b MyBuffer) (n int, err error) {
 	if bw.err != nil {
 		return 0, bw.err
 	}
+	n = len(b.Bytes())
 	if flush := bw.addMsg(b); flush {
 		if err := bw.Flush(); err != nil {
 			return 0, err
 		}
 	}
-	return len(b.Bytes()), nil
+	return n, nil
 }
 
 func (bw *PCBufioWriter) Buffered() int {
@@ -248,18 +249,21 @@ func (bw *PCBufioWriter) Flush() error {
 			return nil
 		}
 		n, err := bw.pc.WriteBatch(msgs, 0) //如果不是linux 平台，会报错：sendmsg invaild parameter
-		if err != nil {
-			bw.err = err
-			return err
-		}
 		// 流量大的时候,经常出现一次write 系统调用没能发送完，导致n<len(msgs)
 		// if n != len(msgs) {
 		// 	log.Printf("-------n:%d, len(msgs):%d--------\n", n, len(msgs))
 		// }
 
-		sended += n
+		if n > 0 {
+			sended += n
+			bw.commit(n)
+		}
 
-		bw.commit(n)
+		if err != nil {
+			bw.err = err
+			bw.releasePending()
+			return err
+		}
 	}
 }
 
@@ -331,6 +335,18 @@ func (w *writeBatchMsg) commit(sended int) {
 	}
 }
 
+func (w *writeBatchMsg) releasePending() {
+	for i := w.offset; i < len(w.wms); i++ {
+		w.wms[i].Buffers[0] = nil
+		w.wms[i].Addr = nil
+		Release(w.buffers[i])
+		w.buffers[i] = nil
+	}
+	w.offset = 0
+	w.wms = w.wms[:0]
+	w.buffers = w.buffers[:0]
+}
+
 func (bw *PCBufioWriter) WriteBatchLoop(fromCh chan MyBuffer) error {
 	var err error
 	for b := range fromCh {
@@ -347,6 +363,14 @@ func (bw *PCBufioWriter) WriteBatchLoop(fromCh chan MyBuffer) error {
 			if err != nil {
 				return pkgerr.Wrap(err, "bw.Flush() fail")
 			}
+		}
+	}
+
+	//channel closed, flush pending msg
+	if bw.Buffered() > 0 {
+		err = bw.Flush()
+		if err != nil {
+			return pkgerr.Wrap(err, "bw.Flush() on channel close fail")
 		}
 	}
 	return pkgerr.New("channel closed in WriteBatchLoop")
