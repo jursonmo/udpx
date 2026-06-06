@@ -35,7 +35,7 @@ type LnCfgOptions func(*ListenConfig)
 
 func WithReuseport(b bool) LnCfgOptions {
 	return func(lc *ListenConfig) {
-		lc.Reuseport = true
+		lc.Reuseport = b
 	}
 }
 
@@ -154,6 +154,8 @@ func NewUdpListen(ctx context.Context, network, addr string, opts ...LnCfgOption
 	if err != nil {
 		return nil, err
 	}
+
+	go ln.StartDebugStatsLoop(ctx, DefaultDebugStatsInterval)
 	return ln, nil
 }
 
@@ -425,6 +427,8 @@ func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt)
 		//read one packet by one syscall
 		go l.readLoop()
 	}
+	//debugStatsLoop
+	//go l.StartDebugStatsLoop(ctx, DefaultDebugStatsInterval, gLogger)
 	return l, nil
 }
 
@@ -627,7 +631,7 @@ func (l *Listener) Close() error {
 
 func (l *Listener) String() string {
 	return fmt.Sprintf("udpx listener, id:%d, batchs:%d, oneshotRead:%v, local:%s://%s, rx:%d, rxDrop:%d, tx:%d, txDrop:%d, txBlocked:%v",
-		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, l.rxDropPkts, l.txPackets, l.txDropPkts, l.txBlocked)
+		l.id, l.batchs, l.oneshotRead, l.LocalAddr().Network(), l.LocalAddr().String(), l.rxPackets, atomic.LoadInt64(&l.rxDropPkts), l.txPackets, atomic.LoadInt64(&l.txDropPkts), l.txBlocked)
 }
 func (l *Listener) ShortString() string {
 	return fmt.Sprintf("udpx listener, id:%d, local:%s://%s", l.id, l.LocalAddr().Network(), l.LocalAddr().String())
@@ -694,9 +698,10 @@ func (ln *UdpListen) checkExpire() error {
 				ccs := l.ListClientConns()
 				l.updateClientExpire(len(ccs))
 				for _, c := range ccs {
-					if c.rxDropPkts > c.check.lastRxDropPkts {
-						c.check.lastRxDropPkts = c.rxDropPkts
-						ln.logger.Warnf("conn:%v, lastRxDropPkts:%d, rxDropPkts:%d\n", c, c.check.lastRxDropPkts, c.rxDropPkts)
+					rxDropPkts := atomic.LoadInt64(&c.rxDropPkts)
+					if rxDropPkts > c.check.lastRxDropPkts {
+						c.check.lastRxDropPkts = rxDropPkts
+						ln.logger.Warnf("conn:%v, lastRxDropPkts:%d, rxDropPkts:%d\n", c, c.check.lastRxDropPkts, rxDropPkts)
 					}
 					if c.check.lastRxPkts != c.rxPackets || c.check.lastAliveAt.IsZero() {
 						c.check.lastRxPkts = c.rxPackets

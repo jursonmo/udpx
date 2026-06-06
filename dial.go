@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync/atomic"
 
 	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
@@ -52,7 +53,6 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	if c.standalone {
 		if c.readBatchs > 0 {
 			//go uc.ReadBatchLoop(uc.rxhandler)
-			InitPool(c.maxBufSize, DefaultPoolStatEnable)
 			go c.readBatchLoopv2()
 		}
 		if c.writeBatchs > 0 {
@@ -63,6 +63,8 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	}
 
 	gLogger.Infof("ok, started UDPConn:%v", c)
+	//StartDebugStatsLoop 里会定时打印UDPConn的状态，方便观察和调试
+	go c.StartDebugStatsLoop(ctx, DefaultDebugStatsInterval, c.logger)
 	return c, nil
 }
 
@@ -144,7 +146,8 @@ func (c *UDPConn) readBatchLoopv2() error {
 				if checkLen < c.needCheck {
 					checkLen += rms[i].N
 					//为了避免独立UPConn在bind 和 connect 之间已经有数据到来，所以这里要检查下数据的源IP是否是connect的IP
-					if !rms[i].Addr.(*net.UDPAddr).IP.Equal(c.raddr.IP) {
+					raddr := rms[i].Addr.(*net.UDPAddr)
+					if raddr.Port != c.raddr.Port || !raddr.IP.Equal(c.raddr.IP) { //要检查远端的端口号是否一致
 						gLogger.Warnf("readBatchLoopv2 client:%v->%v, drop pkt, pkt srcIP:%v, but UDPConn remoteIP:%v\n", c.LocalAddr(), c.RemoteAddr(), rms[i].Addr, c.raddr)
 						continue
 					}
@@ -167,14 +170,15 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 	switch typ {
 	case frameTypeData:
 		if !trimFrameHeader(b) {
-			payloadBuffer := GetMyBuffer(len(payload))
-			if _, err := payloadBuffer.Write(payload); err != nil {
-				Release(payloadBuffer)
-				Release(b)
-				return err
-			}
-			Release(b)
-			b = payloadBuffer
+			// payloadBuffer := GetMyBuffer(len(payload))
+			// if _, err := payloadBuffer.Write(payload); err != nil {
+			// 	Release(payloadBuffer)
+			// 	Release(b)
+			// 	return err
+			// }
+			// Release(b)
+			// b = payloadBuffer
+			panic("trimFrameHeader failed")
 		}
 	case frameTypeHello:
 		// 服务端连接收到重复 Hello，说明客户端可能没收到 HelloAck，可以重发 ack；客户端侧直接丢弃。
@@ -217,13 +221,13 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 		c.rxPackets += 1
 		c.rxDataPkts += 1
 	default:
-		c.rxDropPkts += 1
+		rxDropPkts := atomic.AddInt64(&c.rxDropPkts, 1)
 		//c.rxDropBytes += int64(len(b.Bytes()))
 
 		//iperf跑流量测试时,iperf显示丢包很多,但服务端这里没有打印, 压力测试了很久才打印一次,所以这里导致丢包的
-		if c.rxDropPkts&127 == 0 {
+		if rxDropPkts == 1 || rxDropPkts&127 == 0 {
 			//panic(fmt.Errorf("notice udpxConn:%v, rxDropPkts:%d\n", c, c.rxDropPkts))
-			gLogger.Warnf("notice udpxConn:%v, rxDropPkts:%d\n", c, c.rxDropPkts)
+			gLogger.Warnf("notice udpxConn:%v, rxDropPkts:%d\n", c, rxDropPkts)
 		}
 		Release(b)
 		return ErrRxQueueFull

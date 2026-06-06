@@ -21,15 +21,6 @@ func (l *Listener) readBatchLoopv2() error {
 	l.logger.Infof("%v, started with readLoopv2(use MyBuffer)....\n", l)
 	defer func() { l.logger.Errorf("%v, readLoopv2(use MyBuffer) quit, err:%v\n", l, err) }()
 
-	// if IP_PKTINFO_ENABLE {
-	// 	for {
-	// 		if err := l.getUDPConnByOOB(); err != nil {
-	// 			l.logger.Errorf("getUDPConnByOOB err:%v\n", err)
-	// 			return err
-	// 		}
-	// 	}
-	// }
-
 	rms := make([]ipv4.Message, l.batchs)
 	for i := 0; i < l.batchs; i++ {
 		rms[i].Buffers = make([][]byte, 1)               //提前分配好rms[i].Buffers[0], 避免接收数据时每次都分配,导致产生很多小对象
@@ -104,10 +95,10 @@ func (l *Listener) handleBuffer(dstAddr *net.UDPAddr, addr net.Addr, b MyBuffer)
 	//只统计非ctrl数据的包数
 	if uc, isCtrlData := l.getUDPConn(addr, b.Bytes()); uc != nil && !isCtrlData {
 		if err := uc.PutRxQueue2(b); err != nil {
-			l.rxDropPkts++
-			if l.rxDropPkts&127 == 0 {
+			rxDropPkts := atomic.AddInt64(&l.rxDropPkts, 1)
+			if rxDropPkts == 1 || rxDropPkts&127 == 0 {
 				//iperf跑流量测试时,iperf显示丢包很多, 但服务端这里没有打印, 说明不是rxqueue太小的问题。
-				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, l.rxDropPkts)
+				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, rxDropPkts)
 			}
 		} else {
 			l.rxPackets++
@@ -140,10 +131,10 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 		}
 
 		if err := uc.PutRxQueue2(b); err != nil {
-			l.rxDropPkts++
-			if l.rxDropPkts&127 == 0 {
+			rxDropPkts := atomic.AddInt64(&l.rxDropPkts, 1)
+			if rxDropPkts == 1 || rxDropPkts&127 == 0 {
 				//iperf跑流量测试时, iperf显示丢包很多, 但服务端这里没有打印, 说明不是rxqueue太小的问题。
-				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, l.rxDropPkts)
+				l.logger.Warnf("notice listener:%v, rxDropPkts:%d\n", l, rxDropPkts)
 			}
 		} else {
 			l.rxPackets++

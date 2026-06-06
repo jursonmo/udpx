@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	pkgerr "github.com/pkg/errors"
 	"golang.org/x/net/ipv4"
@@ -49,7 +50,7 @@ func (c *UDPConn) writeRawWithBatch(data []byte) (n int, err error) {
 		b.SetAddr(c.raddr)
 		err = c.ln.PutTxQueue(b, c.txBlocked)
 		if err != nil {
-			c.txDropPkts++
+			atomic.AddInt64(&c.txDropPkts, 1)
 		} else {
 			c.txPackets++
 		}
@@ -75,11 +76,11 @@ func (l *Listener) PutTxQueue(b MyBuffer, blocked bool) error {
 	case l.txqueue <- b:
 		l.txPackets++ //统计发送的包数,但是不是特别严谨, 因为这里不代表已经发送出去了
 	default:
-		l.txDropPkts++
+		txDropPkts := atomic.AddInt64(&l.txDropPkts, 1)
 		//l.txDropBytes += int64(len(b.Bytes()))
-		if l.txDropPkts&127 == 0 {
+		if txDropPkts&127 == 0 {
 			//panic(fmt.Errorf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts))
-			l.logger.Warnf("notice listener:%v, txDropPkts:%d\n", l, l.txDropPkts)
+			l.logger.Warnf("notice listener:%v, txDropPkts:%d\n", l, txDropPkts)
 		}
 		Release(b)
 		return ErrTxQueueFull

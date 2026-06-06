@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pkgerr "github.com/pkg/errors"
@@ -61,7 +62,7 @@ type UDPConn struct {
 	rxhandler   func([]byte)
 	rxqueuelen  int
 	rxPackets   int64
-	rxDropPkts  int64
+	rxDropPkts  int64 //rxDropPkts虽然用了atomic.AddInt64 来增加,但只是偶发增长, 伪共享对周边字段的读写影响不大。
 	rxDropBytes int64
 	readBatchs  int //表示是否需要单独为此conn 后台起goroutine来批量读
 	writeBatchs int //表示是否需要单独为此conn 后台起goroutine来批量写
@@ -161,6 +162,7 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 		maxBufSize:  defaultMaxPacketSize,
 		oneshotRead: true, //默认为true, udp 就应该是oneshotRead
 		standalone:  standalone,
+		logger:      gLogger,
 	}
 	uc.rxhandler = uc.handlePacket //原始非batch模式: readLoop()-->handlePacket()-->rxhandler
 	for _, opt := range opts {
@@ -181,7 +183,8 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 		//server accept's UDPConn need to alloc space for saving token
 		uc.token = make([]byte, tokenSize)
 	}
-	gLogger.Infof("new UDPConn:%v\n", uc)
+
+	uc.logger.Infof("new UDPConn:%v\n", uc)
 	return uc
 }
 
@@ -430,15 +433,18 @@ func (c *UDPConn) writeFrameBuffer(b MyBuffer) (n int, err error) {
 			}
 			return n, nil
 		}
+
+		// 普通非batch模式, 直接发送
 		n, err = c.lconn.Write(b.Bytes())
 		Release(b)
 		if err != nil {
-			c.txDropPkts++
+			atomic.AddInt64(&c.txDropPkts, 1)
 		} else {
 			c.txPackets++
 		}
 		return
 	}
+
 	//the conn that accepted by listener
 	//由listener accept产生的UDPConn, 发送前判断是否是关闭状态. dial 产生UDPConn，如果已经关闭，底层socket 会报错返回，不需要判断
 	if c.closed {
@@ -453,7 +459,7 @@ func (c *UDPConn) writeFrameBuffer(b MyBuffer) (n int, err error) {
 			if err != ErrTxQueueFull {
 				Release(b)
 			}
-			c.txDropPkts++
+			atomic.AddInt64(&c.txDropPkts, 1)
 			return 0, err
 		}
 		c.txPackets++
@@ -462,8 +468,8 @@ func (c *UDPConn) writeFrameBuffer(b MyBuffer) (n int, err error) {
 	n, err = c.lconn.WriteTo(b.Bytes(), c.raddr)
 	Release(b)
 	if err != nil {
-		c.txDropPkts++
-		c.ln.txDropPkts++
+		atomic.AddInt64(&c.txDropPkts, 1)
+		atomic.AddInt64(&c.ln.txDropPkts, 1)
 	} else {
 		c.txPackets++
 		c.ln.txPackets++
@@ -479,7 +485,7 @@ func (c *UDPConn) writeRaw(b []byte) (n int, err error) {
 		}
 		n, err = c.lconn.Write(b)
 		if err != nil {
-			c.txDropPkts++
+			atomic.AddInt64(&c.txDropPkts, 1)
 		} else {
 			c.txPackets++
 		}
@@ -496,8 +502,8 @@ func (c *UDPConn) writeRaw(b []byte) (n int, err error) {
 	}
 	n, err = c.lconn.WriteTo(b, c.raddr)
 	if err != nil {
-		c.txDropPkts++
-		c.ln.txDropPkts++
+		atomic.AddInt64(&c.txDropPkts, 1)
+		atomic.AddInt64(&c.ln.txDropPkts, 1)
 	} else {
 		c.txPackets++
 		c.ln.txPackets++
@@ -509,8 +515,8 @@ func (c *UDPConn) LocalStats() ConnStats {
 	return ConnStats{
 		TxPackets:   uint64(c.txDataPkts),
 		RxPackets:   uint64(c.rxDataPkts),
-		RxDropPkts:  uint64(c.rxDropPkts),
-		TxDropPkts:  uint64(c.txDropPkts),
+		RxDropPkts:  uint64(atomic.LoadInt64(&c.rxDropPkts)),
+		TxDropPkts:  uint64(atomic.LoadInt64(&c.txDropPkts)),
 		TimestampMs: nowUnixMilli(),
 	}
 }
@@ -522,8 +528,9 @@ func (c *UDPConn) PeerStats() ConnStats {
 }
 
 func (c *UDPConn) SendStats() error {
-	_, err := c.writeControlFrame(frameTypeStats, encodeStatsPayload(c.LocalStats()))
-	return err
+	return nil //暂时不发送stats
+	// _, err := c.writeControlFrame(frameTypeStats, encodeStatsPayload(c.LocalStats()))
+	// return err
 }
 
 func (c *UDPConn) setPeerStats(s ConnStats) {
@@ -558,7 +565,7 @@ func (c *UDPConn) PutTxQueue(b MyBuffer, blocked bool) error {
 	case c.txqueue <- b:
 		c.txPackets++ //统计发送的包数,但是不是很严谨,因为这不能代表已经发送出去了。
 	default:
-		c.txDropPkts++
+		atomic.AddInt64(&c.txDropPkts, 1)
 		//c.txDropBytes += int64(len(b.Bytes()))
 		Release(b)
 		return ErrTxQueueFull
@@ -573,7 +580,7 @@ func (c *UDPConn) String() string {
 	}
 	return fmt.Sprintf("isClient:%v, standalone:%v, %s, laddr:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d(%d), tx:%d, txDrop:%d(%d), txBlocked:%v",
 		c.client, c.standalone, lnString, c.lconn.LocalAddr(), c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen,
-		c.rxPackets, c.rxDropPkts, c.rxDropBytes, c.txPackets, c.txDropPkts, c.txDropBytes, c.txBlocked)
+		c.rxPackets, atomic.LoadInt64(&c.rxDropPkts), c.rxDropBytes, c.txPackets, atomic.LoadInt64(&c.txDropPkts), c.txDropBytes, c.txBlocked)
 }
 
 // 重写对象MarshalJSON方法，返回的内容要符合{"key": "value"}的json Marshal 后的格式,
