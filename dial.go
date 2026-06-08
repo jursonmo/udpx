@@ -41,9 +41,6 @@ func DialWithOpt(ctx context.Context, network, laddr, raddr string, opts ...UDPC
 	}
 
 	c := NewUDPConn(nil, lconn, true, ra, opts...)
-	// if c.rxhandler != nil {
-	// 	go c.ReadBatchLoop(c.rxhandler)
-	// }
 	err = c.handshake(ctx)
 	if err != nil {
 		c.Close()
