@@ -20,9 +20,13 @@ const (
 	frameTypePing
 	frameTypePong
 	frameTypeStats
+	frameTypeDataSeq
 )
 
-const frameStatsPayloadLen = 40
+const (
+	frameStatsPayloadLen = 40
+	dataSeqHeaderLen     = 8 // seq uint64
+)
 
 type ConnStats struct {
 	TxPackets   uint64
@@ -61,6 +65,24 @@ func newFrameBuffer(maxPacketSize int, typ byte, payload []byte) (MyBuffer, erro
 	buf := b.Buffer()
 	writeFrameHeader(buf[:frameHeaderLen], typ)
 	b.Advance(frameHeaderLen)
+
+	if _, err := b.Write(payload); err != nil {
+		Release(b)
+		return nil, err
+	}
+	return b, nil
+}
+
+func newDataSeqFrameBuffer(maxPacketSize int, seq uint64, payload []byte) (MyBuffer, error) {
+	if len(payload)+frameHeaderLen+dataSeqHeaderLen > maxPacketSize {
+		return nil, fmt.Errorf("payload len:%d plus frame header:%d plus seq header:%d > max packet size:%d", len(payload), frameHeaderLen, dataSeqHeaderLen, maxPacketSize)
+	}
+
+	b := GetMyBuffer(frameHeaderLen + dataSeqHeaderLen + len(payload))
+	buf := b.Buffer()
+	writeFrameHeader(buf[:frameHeaderLen], frameTypeDataSeq)
+	binary.BigEndian.PutUint64(buf[frameHeaderLen:frameHeaderLen+dataSeqHeaderLen], seq)
+	b.Advance(frameHeaderLen + dataSeqHeaderLen)
 
 	if _, err := b.Write(payload); err != nil {
 		Release(b)
@@ -127,13 +149,17 @@ func nowUnixMilli() uint64 {
 }
 
 func trimFrameHeader(b MyBuffer) bool {
+	return trimFrameHeaderN(b, frameHeaderLen)
+}
+
+func trimFrameHeaderN(b MyBuffer, n int) bool {
 	buf, ok := b.(*Buffer)
 	if !ok {
 		return false
 	}
-	if len(buf.Bytes()) < frameHeaderLen {
+	if len(buf.Bytes()) < n {
 		return false
 	}
-	buf.roffset += frameHeaderLen
+	buf.roffset += n
 	return true
 }

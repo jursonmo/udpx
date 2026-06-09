@@ -177,6 +177,15 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 			// b = payloadBuffer
 			panic("trimFrameHeader failed")
 		}
+	case frameTypeDataSeq:
+		if _, ok := c.decodeDataSeqPayload(payload); !ok {
+			Release(b)
+			return nil
+		}
+		if !trimFrameHeaderN(b, frameHeaderLen+dataSeqHeaderLen) {
+			Release(b)
+			panic("trimFrameHeaderN data seq failed")
+		}
 	case frameTypeHello:
 		// 服务端连接收到重复 Hello，说明客户端可能没收到 HelloAck，可以重发 ack；客户端侧直接丢弃。
 		if c.ln != nil && bytes.Equal(payload, c.token[:]) {

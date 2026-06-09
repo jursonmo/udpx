@@ -54,6 +54,7 @@ type UDPConn struct {
 	txDropPkts  int64
 	txDropBytes int64
 	txDataPkts  int64
+	txSeq       uint64
 	rxDataPkts  int64
 	peerStats   ConnStats
 	peerStatsMu sync.RWMutex
@@ -64,6 +65,12 @@ type UDPConn struct {
 	rxPackets   int64
 	rxDropPkts  int64 //rxDropPkts虽然用了atomic.AddInt64 来增加,但只是偶发增长, 伪共享对周边字段的读写影响不大。
 	rxDropBytes int64
+
+	rxSeqInited uint32
+	rxNextSeq   uint64
+	rxGapPkts   uint64
+	rxLatePkts  uint64
+
 	readBatchs  int //表示是否需要单独为此conn 后台起goroutine来批量读
 	writeBatchs int //表示是否需要单独为此conn 后台起goroutine来批量写
 	maxBufSize  int
@@ -185,6 +192,9 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	}
 
 	uc.logger.Infof("new UDPConn:%v\n", uc)
+	if traceDataSeq {
+		go uc.startSeqStatsLoop()
+	}
 	return uc
 }
 
@@ -300,6 +310,18 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 				c.rxPackets++
 				c.rxDataPkts++
 				return n, nil
+			case frameTypeDataSeq:
+				payload, ok := c.decodeDataSeqPayload(payload)
+				if !ok {
+					continue
+				}
+				n = copy(buf, payload)
+				if n < len(payload) && c.oneshotRead {
+					return n, fmt.Errorf("user_buf_len:%d, have copyed:%d, remain:%d, %w", len(buf), n, len(payload)-n, ErrShortRead)
+				}
+				c.rxPackets++
+				c.rxDataPkts++
+				return n, nil
 			case frameTypeHello:
 				if c.ln != nil && bytes.Equal(payload, c.token[:]) {
 					if _, err := c.writeControlFrame(frameTypeHelloAck, c.token[:]); err != nil {
@@ -391,7 +413,7 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 	}
 }
 func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	fb, err := newFrameBuffer(c.maxBufSize, frameTypeData, b)
+	fb, err := c.newDataFrameBuffer(b)
 	if err != nil {
 		return 0, pkgerr.WithMessage(err, "new data frame buffer failed")
 	}
@@ -404,7 +426,7 @@ func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	return len(b), nil
 }
 func (c *UDPConn) Write(b []byte) (n int, err error) {
-	fb, err := newFrameBuffer(c.maxBufSize, frameTypeData, b)
+	fb, err := c.newDataFrameBuffer(b)
 	if err != nil {
 		return 0, pkgerr.WithMessage(err, "new data frame buffer failed")
 	}

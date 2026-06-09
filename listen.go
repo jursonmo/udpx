@@ -492,6 +492,14 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 		if uc.rxhandler != nil {
 			uc.rxhandler(payload)
 		}
+	case frameTypeDataSeq:
+		payload, ok := uc.decodeDataSeqPayload(payload)
+		if !ok {
+			return
+		}
+		if uc.rxhandler != nil {
+			uc.rxhandler(payload)
+		}
 	case frameTypeHello:
 		if bytes.Equal(payload, uc.token[:]) {
 			if _, err := uc.lconn.WriteTo(encodeFrame(frameTypeHelloAck, uc.token[:]), addr); err != nil {
