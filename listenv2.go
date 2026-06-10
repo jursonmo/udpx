@@ -169,13 +169,14 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	}
 	//查看bind端口的情况: lsof -an -p $pid
 
-	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
+	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize),
+		WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked), WithUCLogger(l.logger))
 	n := copy(uc.token[:], token)
 	if n != tokenSize {
 		panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 	}
 
-	//记录当前socket的接收缓冲区的数据字节数，这部分数据是需要检查其地址是否正确的.
+	//记录当前socket的接收缓冲区的数据字节数，这部分数据是需要检查其地址是否正确的. 因为 uc.lconn 创建的时候，bind 之前, 可能已经有其他client的数据到达了这个socket了，
 	uc.needCheck, err = getUDPSocketLen(uc.lconn)
 	if err != nil {
 		panic(err)
