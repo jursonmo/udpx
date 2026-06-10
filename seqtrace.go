@@ -50,7 +50,7 @@ func (c *UDPConn) checkRxSeq(seq uint64, payloadLen int) {
 }
 
 func (c *UDPConn) startSeqStatsLoop() {
-	t := time.NewTicker(2 * time.Second)
+	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
 
 	var lastGap, lastLate uint64
