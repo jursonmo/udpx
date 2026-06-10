@@ -14,4 +14,6 @@ udpx 的服务器运行linux, 可以服务所有的udp 客户端， 如果客户
 
 2. 在udp server 侦听 0.0.0.0时的使用场景，可能会出现bug， 因为自定义UDPConn的查找，仅仅是根据对方的ip和port来查找的，而不是根据五元组来查找的。如果一个客户端同时服务器的多个ip, 那么就会出现问题，两个连接会被错误的路由到同一个conn上，导致数据错乱。
 
-3. udpx 作为隧道的underlay协议, 需要注意mtu, 尽量避免分片，导致接收端rpc 负载失效和增加分片报文的重组开销。根据隧道协议头部大小来设置mtu, 可以默认设置1440. 不分片才性能最佳。遇到分片链接断开的怪异问题, 所以最好不要分片。
+3. udpx 作为隧道的underlay协议, 需要注意mtu, 尽量避免分片，导致接收端rpc 负载失效和增加分片报文的重组开销。根据隧道协议头部大小来设置mtu, 可以默认设置1440. 不分片才性能最佳, 且分片会导致softirq不能负载。遇到分片链接断开的怪异问题, 所以最好不要分片。(增加了magic 和协议头部后，最好设置1430)
+
+4. 跑iperf3 出现丢包时，先查看程序有没有统计到rxDropPkts和txDropPkts，tc -s qdisc show dev ${underlay 网卡}，查看网卡是否有丢包, 接受端查看/proc/net/udp 是否有丢包, nstat -az | egrep 'UdpInErrors|UdpRcvbufErrors|UdpInCsumErrors|TcpExtTCPOFOQueue|TCPFastRetrans|TCPTimeouts' 统计情况, 

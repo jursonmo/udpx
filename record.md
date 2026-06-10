@@ -90,7 +90,76 @@ cat /proc/net/udp
 
   19. TODO: token v2.0 , 客户端握手服务端时，可以携带更多的信息，二不局限4个字节的握手报文，验证成功后，服务器再分配一个独一无二的二个字节的magic给客户端，这样每个报文都携带这个magic, 这样避免收到一些非合法报文，导致连接处理异常断开。目前默认只有在握手时验证合法性，验证成后，同一个连接的后面数据就没有任何的检验了，所以每个报文多个magic还是有必要的。
 
-  20. dev_proto_260523 分支, 已经把数据报文和控制报文区分开来了。控制报文的握手报文里的内容是固定的magic 和 随机token。
+  20. dev_proto_260523 分支, 已经把数据报文和控制报文区分开来了。控制报文的握手报文里的内容是固定的magic 和 随机token。（Done）
 
-  21. TODO: udpx作为underlay, overlay 上iperf3测试发现丢包，在哪里丢的包呢？查看内核udp socket 的丢包情况。 
-  测试时，对比udpx batch 16、tcp underlay 的丢包情况。
+  21. TODO: udpx作为underlay, overlay 上iperf3测试发现丢包, 即使指定只跑800m(不限制可以跑880m), iperf3还是显示有丢包，在哪里丢的包呢？查看内核udp socket 的丢包情况（查看/proc/net/udp 的drops 没有丢包，它仅仅代表接受报文是的丢包情况）。 nstat -az | grep "Udp" |grep "Error" 也看了下，iperf3丢包的时候，它没有丢包的情况。 
+  测试时，对比udpx batch 16、tcp underlay 的丢包情况（udpx用batch 16还是有丢包的，且不用batch 也出现丢包, tcp underlay，iperf3没有限速860m都没有丢包）。
+ 
+ 经测试：iperf3 客户端显示有丢包时，服务端设备上系统TcpExtTCPOFOQueue 会有明显的增加。 mvnet1 mtu 1380还是有丢包的情况，所以不是mtu 分片的问题。
+ ```
+  nstat -az | egrep 'UdpInErrors|UdpRcvbufErrors|UdpInCsumErrors|TcpExtTCPOFOQueue|TCPFastRetrans|TCPTimeouts'
+    UdpInErrors                     253                0.0
+    UdpRcvbufErrors                 253                0.0
+    UdpInCsumErrors                 0                  0.0
+    TcpExtTCPFastRetrans            1318               0.0
+    TcpExtTCPTimeouts               9814               0.0
+    TcpExtTCPOFOQueue               57705849           0.0
+```
+
+  underlay 是tcp, 虽然iperf3客户端上没有显示丢包，但是系统TcpExtTCPOFOQueue 也会增加。说明是underlay tcp 是有乱序的情况，乱序严重也会可能导致重传bytes_retrans(大部分情况下TcpExtTCPOFOQueue 增加，但是bytes_retrans 不增加)。
+  ```
+  root@ubuntu:/sys/class/net/eth1/queues# nstat -az | egrep 'UdpInErrors|UdpRcvbufErrors|UdpInCsumErrors|TcpExtTCPOFOQueue|TCPFastRetrans|TCPTimeouts'
+UdpInErrors                     253                0.0
+UdpRcvbufErrors                 253                0.0
+UdpInCsumErrors                 0                  0.0
+TcpExtTCPFastRetrans            1430               0.0
+TcpExtTCPTimeouts               9981               0.0
+TcpExtTCPOFOQueue               67240264           0.0
+
+root@ubuntu:/sys/class/net/eth1/queues# nstat -az | egrep 'UdpInErrors|UdpRcvbufErrors|UdpInCsumErrors|TcpExtTCPOFOQueue|TCPFastRetrans|TCPTimeouts'
+UdpInErrors                     253                0.0
+UdpRcvbufErrors                 253                0.0
+UdpInCsumErrors                 0                  0.0
+TcpExtTCPFastRetrans            1430               0.0
+TcpExtTCPTimeouts               9981               0.0
+TcpExtTCPOFOQueue               67241086           0.0
+
+root@ubuntu:/sys/class/net/eth1/queues# ss -i "dst 192.168.99.1"
+Netid    State    Recv-Q     Send-Q         Local Address:Port          Peer Address:Port     Process
+tcp      ESTAB    33490      740             192.168.99.2:12345         192.168.99.1:38936
+	 bbr wscale:8,8 rto:204 rtt:0.9/0.1 ato:40 mss:1448 pmtu:1500 rcvmss:1448 advmss:1448 cwnd:130 ssthresh:138 bytes_sent:391219531 bytes_retrans:29786 bytes_acked:391189005 bytes_received:33752045683 segs_out:6111673 segs_in:24690995 data_segs_out:2837486 data_segs_in:23993332 bbr:(bw:374.6Mbps,mrtt:0.06,pacing_gain:1.25,cwnd_gain:2) send 1673.2Mbps pacing_rate 463.5Mbps delivery_rate 374.6Mbps delivered:2837480 app_limited busy:338868ms unacked:4 retrans:0/23 dsack_dups:20 reordering:5 reord_seen:425 rcv_rtt:1.109 rcv_space:474742 rcv_ssthresh:1731828 minrtt:0.049
+root@ubuntu:/sys/class/net/eth1/queues#
+root@ubuntu:/sys/class/net/eth1/queues# ss -i "dst 192.168.99.1"
+Netid    State    Recv-Q     Send-Q         Local Address:Port          Peer Address:Port     Process
+tcp      ESTAB    0          1406            192.168.99.2:12345         192.168.99.1:38936
+	 bbr wscale:8,8 rto:204 rtt:0.804/0.143 ato:40 mss:1448 pmtu:1500 rcvmss:1448 advmss:1448 cwnd:112 ssthresh:138 bytes_sent:414353305 bytes_retrans:31234 bytes_acked:414320665 bytes_received:35625398115 segs_out:6484855 segs_in:26070193 data_segs_out:3006834 data_segs_in:25331660 bbr:(bw:314.7Mbps,mrtt:0.066,pacing_gain:1.25,cwnd_gain:2) send 1613.7Mbps pacing_rate 389.4Mbps delivery_rate 314.7Mbps delivered:3006824 app_limited busy:357028ms unacked:8 retrans:0/24 dsack_dups:21 reordering:5 reord_seen:442 rcv_rtt:1.096 rcv_space:474742 rcv_ssthresh:1731828 minrtt:0.049
+```
+
+#### 加了 seq 来判断是否有乱序的情况，还是丢包的情况。
+   UDPX_TRACE_SEQ=1 ./mvnet_seq_0609 -c server.toml
+   UDPX_TRACE_SEQ=1 ./mvnet_seq_0609 -c client.toml
+   rxGapPkts 很多，rxLatePkts 却很少 ，说明是丢包的情况。
+   两种情况下丢包：发送端丢包，接收端丢包。接受端丢包可以查看/proc/net/udp 的drops 没有丢包。 大概率是发送端丢包。
+
+
+  结果出来：是发送端的tc fq 太小，导致udpx 瞬间报文很多，导致fq满了丢包。dropped 4839190。 把fq limit 增加到 100000 后，跑iperf3不再丢包。
+  ```
+  root@test5:~/mv# tc -s qdisc show dev eth1
+qdisc fq 0: root refcnt 2 limit 10000p flow_limit 100p buckets 1024 orphan_mask 1023 quantum 3028b initial_quantum 15140b low_rate_threshold 550Kbit refill_delay 40.0ms
+ Sent 9484642830981 bytes 2192789607 pkt (dropped 4839190, overlimits 0 requeues 2691251)
+ backlog 0b 0p requeues 2691251
+  flows 650 (inactive 648 throttled 0)
+  gc 0 highprio 12 throttled 93686325 latency 6.587us flows_plimit 4839190
+root@test5:~/mv#
+root@test5:~/mv# tc qdisc replace dev eth1 root fq limit 100000 flow_limit 10000
+root@test5:~/mv#
+root@test5:~/mv# tc -s qdisc show dev eth1
+qdisc fq 8001: root refcnt 2 limit 100000p flow_limit 10000p buckets 1024 orphan_mask 1023 quantum 3028b initial_quantum 15140b low_rate_threshold 550Kbit refill_delay 40.0ms
+ Sent 292 bytes 4 pkt (dropped 0, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+  flows 2 (inactive 1 throttled 0)
+  gc 0 highprio 0 throttled 0
+root@test5:~/mv#
+```
+
+22. ksoftirqd 的出现，会不会让同一个流的数据出现乱序？
