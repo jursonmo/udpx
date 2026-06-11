@@ -35,6 +35,7 @@ type UDPConn struct {
 	standalone bool
 	needCheck  int //ln 产生独立UDPConn 在connect 时, socket 已经缓存的数据字节长度, 这些数据需要检查地址是否正确。
 	token      []byte
+	authData   []byte
 	lconn      *net.UDPConn
 	pc         *ipv4.PacketConn
 	raddr      *net.UDPAddr
@@ -47,29 +48,32 @@ type UDPConn struct {
 	undrainedBufferMux  sync.Mutex
 	lastUndrainedBuffer MyBuffer //在不要求一次性MyBuffer的内容的时候，没读完的就放在lastUndrainedBuffer 里
 
-	txBlocked   bool //发送时，是否会阻塞, 默认为true, 即阻塞
-	txqueue     chan MyBuffer
-	txqueuelen  int
-	txPackets   int64
-	txDropPkts  int64
-	txDropBytes int64
-	txDataPkts  int64
-	txSeq       uint64
-	rxDataPkts  int64
-	peerStats   ConnStats
-	peerStatsMu sync.RWMutex
-	rxqueue     chan MyBuffer
-	rxqueueB    chan []byte
-	rxhandler   func([]byte)
-	rxqueuelen  int
-	rxPackets   int64
-	rxDropPkts  int64 //rxDropPkts虽然用了atomic.AddInt64 来增加,但只是偶发增长, 伪共享对周边字段的读写影响不大。
-	rxDropBytes int64
+	txBlocked      bool //发送时，是否会阻塞, 默认为true, 即阻塞
+	txqueue        chan MyBuffer
+	txqueuelen     int
+	txPackets      int64
+	txDropPkts     int64
+	txDropBytes    int64
+	txDataPkts     int64
+	requestDataSeq bool
+	dataSeqEnabled bool
+	txSeq          uint64
+	rxDataPkts     int64
+	peerStats      ConnStats
+	peerStatsMu    sync.RWMutex
+	rxqueue        chan MyBuffer
+	rxqueueB       chan []byte
+	rxhandler      func([]byte)
+	rxqueuelen     int
+	rxPackets      int64
+	rxDropPkts     int64 //rxDropPkts虽然用了atomic.AddInt64 来增加,但只是偶发增长, 伪共享对周边字段的读写影响不大。
+	rxDropBytes    int64
 
-	rxSeqInited uint32
-	rxNextSeq   uint64
-	rxGapPkts   uint64
-	rxLatePkts  uint64
+	rxSeqInited     uint32
+	rxNextSeq       uint64
+	rxGapPkts       uint64
+	rxLatePkts      uint64
+	seqStatsStarted uint32
 
 	readBatchs  int //表示是否需要单独为此conn 后台起goroutine来批量读
 	writeBatchs int //表示是否需要单独为此conn 后台起goroutine来批量写
@@ -155,6 +159,24 @@ func WithTxBlocked(b bool) UDPConnOpt {
 	}
 }
 
+func WithAuthData(data []byte) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.authData = cloneBytes(data)
+	}
+}
+
+func WithDataSeqRequest(b bool) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.requestDataSeq = b
+	}
+}
+
+func withDataSeqEnabled(b bool) UDPConnOpt {
+	return func(u *UDPConn) {
+		u.dataSeqEnabled = b
+	}
+}
+
 // listener accept 得到 udpc conn 后, 不想跟listener 的txBlocked 属性一样，可以设置此接口来设置发送时是否可以阻塞。默认是true,是阻塞的。
 func (uc *UDPConn) SetTxBlocked(b bool) {
 	uc.txBlocked = b
@@ -162,14 +184,15 @@ func (uc *UDPConn) SetTxBlocked(b bool) {
 
 func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UDPAddr, opts ...UDPConnOpt) *UDPConn {
 	uc := &UDPConn{ln: ln, lconn: lconn, raddr: raddr, dead: make(chan struct{}, 1), txBlocked: txqueueBlocked,
-		rxqueuelen:  1024, //接收的队列可以适当大一点, 避免突发流量丢包, 特别是ln 批量读数据后，put 到指定UDPConn的rxqueue 时是非阻塞的。
-		txqueuelen:  512,
-		readBatchs:  defaultBatchs,
-		writeBatchs: defaultBatchs,
-		maxBufSize:  defaultMaxPacketSize,
-		oneshotRead: true, //默认为true, udp 就应该是oneshotRead
-		standalone:  standalone,
-		logger:      gLogger,
+		rxqueuelen:     1024, //接收的队列可以适当大一点, 避免突发流量丢包, 特别是ln 批量读数据后，put 到指定UDPConn的rxqueue 时是非阻塞的。
+		txqueuelen:     512,
+		readBatchs:     defaultBatchs,
+		writeBatchs:    defaultBatchs,
+		maxBufSize:     defaultMaxPacketSize,
+		oneshotRead:    true, //默认为true, udp 就应该是oneshotRead
+		standalone:     standalone,
+		requestDataSeq: ln == nil && traceClientDataSeq, //主动发起的client 由traceClientDataSeq来设置，server 由traceServerDataSeq 来设置，但最终由client hello报文决定是否开启seq trace
+		logger:         gLogger,
 	}
 	uc.rxhandler = uc.handlePacket //原始非batch模式: readLoop()-->handlePacket()-->rxhandler
 	for _, opt := range opts {
@@ -192,15 +215,16 @@ func NewUDPConn(ln *Listener, lconn *net.UDPConn, standalone bool, raddr *net.UD
 	}
 
 	uc.logger.Infof("new UDPConn:%v\n", uc)
-	if traceDataSeq {
-		go uc.startSeqStatsLoop()
-	}
 	return uc
 }
 
 // 握手报文使用 frameTypeHello/frameTypeHelloAck，避免控制报文和业务报文混淆。
 func (c *UDPConn) handshake(_ context.Context) error {
-	_, err := c.lconn.Write(encodeFrame(frameTypeHello, c.token[:]))
+	hello, err := encodeHelloFrame(c.token[:], c.authData, true, c.requestDataSeq)
+	if err != nil {
+		return err
+	}
+	_, err = c.lconn.Write(hello)
 	if err != nil {
 		gLogger.Errorf("send token err:%v", err)
 		return err
@@ -217,8 +241,9 @@ func (c *UDPConn) handshake(_ context.Context) error {
 		return err
 	}
 
-	token, ok := decodeHelloAckFrame(buf[:n])
-	if ok && bytes.Equal(token, c.token[:]) {
+	ack, ok := decodeHelloAckFrame(buf[:n])
+	if ok && bytes.Equal(ack.Token, c.token[:]) {
+		c.setDataSeqEnabled(ack.DataSeqEnabled)
 		return nil
 	}
 	return fmt.Errorf("token not match")
@@ -323,8 +348,13 @@ func (c *UDPConn) Read(buf []byte) (n int, err error) {
 				c.rxDataPkts++
 				return n, nil
 			case frameTypeHello:
-				if c.ln != nil && bytes.Equal(payload, c.token[:]) {
-					if _, err := c.writeControlFrame(frameTypeHelloAck, c.token[:]); err != nil {
+				hello, ok := decodeHelloPayload(payload)
+				if c.ln != nil && ok && bytes.Equal(hello.Token, c.token[:]) {
+					ack, err := encodeHelloAckFrame(c.token[:], SessionPolicy{EnableDataSeq: c.dataSeqEnabled})
+					if err != nil {
+						return 0, err
+					}
+					if _, err := c.writeRaw(ack); err != nil {
 						return 0, err
 					}
 				}
@@ -600,8 +630,8 @@ func (c *UDPConn) String() string {
 	if c.ln != nil {
 		lnString = fmt.Sprintf("listener id:%v", c.ln.id)
 	}
-	return fmt.Sprintf("isClient:%v, standalone:%v, %s, laddr:%v, raddr:%v, oneshotRead:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d(%d), tx:%d, txDrop:%d(%d), txBlocked:%v",
-		c.client, c.standalone, lnString, c.lconn.LocalAddr(), c.raddr, c.oneshotRead, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen,
+	return fmt.Sprintf("isClient:%v, standalone:%v, %s, laddr:%v, raddr:%v, oneshotRead:%v, dataSeq:%v, rwbatch(%d,%d), rxtxqueue(%d,%d), rx:%d, rxDrop:%d(%d), tx:%d, txDrop:%d(%d), txBlocked:%v",
+		c.client, c.standalone, lnString, c.lconn.LocalAddr(), c.raddr, c.oneshotRead, c.dataSeqEnabled, c.readBatchs, c.writeBatchs, c.rxqueuelen, c.txqueuelen,
 		c.rxPackets, atomic.LoadInt64(&c.rxDropPkts), c.rxDropBytes, c.txPackets, atomic.LoadInt64(&c.txDropPkts), c.txDropBytes, c.txBlocked)
 }
 

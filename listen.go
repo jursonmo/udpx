@@ -70,6 +70,12 @@ func CfgLogger(l Logger) LnCfgOptions {
 	}
 }
 
+func WithAuthPolicy(fn AuthPolicyFunc) LnCfgOptions {
+	return func(lc *ListenConfig) {
+		lc.authPolicy = fn
+	}
+}
+
 type ListenConfig struct {
 	network string
 	addr    string
@@ -81,6 +87,7 @@ type ListenConfig struct {
 	MaxPacketSize int
 	OneshotRead   bool //默认为true, 影响到listenner 产生的conn 的Read()行为
 	logger        Logger
+	authPolicy    AuthPolicyFunc
 }
 
 type UdpListen struct {
@@ -107,6 +114,7 @@ func DefaultLnConfig() ListenConfig {
 		TxBlocked:     true,
 		OneshotRead:   true,
 		logger:        StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())},
+		authPolicy:    defaultAuthPolicy,
 	}
 }
 
@@ -170,7 +178,8 @@ func (ln *UdpListen) Start() error {
 	for i := 0; i < cfg.ListenerNum; i++ {
 		l, err := NewListener(ln.ctx, cfg.network, cfg.addr,
 			WithId(i), WithLnBatchs(cfg.Batchs), WithLnMaxPacketSize(cfg.MaxPacketSize),
-			WithLogger(ln.logger), LnWithOneshotRead(cfg.OneshotRead), LnWithTxBlocked(cfg.TxBlocked))
+			WithLogger(ln.logger), LnWithOneshotRead(cfg.OneshotRead), LnWithTxBlocked(cfg.TxBlocked),
+			LnWithAuthPolicy(cfg.authPolicy))
 		if err != nil {
 			return pkgerr.Wrapf(err, "NewListener %d fail", i)
 		}
@@ -301,6 +310,7 @@ type Listener struct {
 	dead           chan struct{}
 	closed         bool
 	oneshotRead    bool //默认为true, udp 就应该是oneshotRead, 即业务层传进来的buff 必须足够大，能一次性读完一个udp报文
+	authPolicy     AuthPolicyFunc
 }
 type ListenerOpt func(*Listener)
 
@@ -346,8 +356,14 @@ func LnWithTxBlocked(b bool) ListenerOpt {
 	}
 }
 
+func LnWithAuthPolicy(fn AuthPolicyFunc) ListenerOpt {
+	return func(l *Listener) {
+		l.authPolicy = fn
+	}
+}
+
 func NewListener(ctx context.Context, network, addr string, opts ...ListenerOpt) (*Listener, error) {
-	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen, dead: make(chan struct{}, 1)}
+	l := &Listener{batchs: defaultBatchs, maxPacketSize: defaultMaxPacketSize, mode: gMode, txBlocked: txqueueBlocked, txqueuelen: defaultTxQueueLen, dead: make(chan struct{}, 1), authPolicy: defaultAuthPolicy}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -501,8 +517,14 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 			uc.rxhandler(payload)
 		}
 	case frameTypeHello:
-		if bytes.Equal(payload, uc.token[:]) {
-			if _, err := uc.lconn.WriteTo(encodeFrame(frameTypeHelloAck, uc.token[:]), addr); err != nil {
+		hello, ok := decodeHelloPayload(payload)
+		if ok && bytes.Equal(hello.Token, uc.token[:]) {
+			ack, err := encodeHelloAckFrame(uc.token[:], SessionPolicy{EnableDataSeq: uc.dataSeqEnabled})
+			if err != nil {
+				l.logger.Errorf("%v, token:%v, encode hello ack err:%v", l, uc.token, err)
+				return
+			}
+			if _, err := uc.lconn.WriteTo(ack, addr); err != nil {
 				l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 			}
 		}
@@ -519,6 +541,28 @@ func (l *Listener) handlePacket(addr net.Addr, data []byte) {
 	}
 }
 
+func (l *Listener) authorizeHello(hello helloFrame, laddr, raddr *net.UDPAddr) (SessionPolicy, bool, error) {
+	authPolicy := l.authPolicy
+	if authPolicy == nil {
+		authPolicy = defaultAuthPolicy
+	}
+	policy, ok, err := authPolicy(AuthInfo{
+		Token:             cloneBytes(hello.Token),
+		AuthData:          cloneBytes(hello.AuthData),
+		LocalAddr:         cloneUDPAddr(laddr),
+		RemoteAddr:        cloneUDPAddr(raddr),
+		ClientCanDataSeq:  hello.ClientCanDataSeq,
+		ClientWantDataSeq: hello.ClientWantDataSeq,
+	})
+	if err != nil || !ok {
+		return SessionPolicy{}, false, err
+	}
+	if !hello.ClientCanDataSeq {
+		policy.EnableDataSeq = false
+	}
+	return policy, true, nil
+}
+
 func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlData bool) {
 	// go tool pprof -alloc_objects http://192.168.64.5:6061/debug/pprof/heap
 	//raddr := addr.String() //net.UDPConn.String() 方法会产生很多小对象, 不如把addr 转化一下
@@ -531,25 +575,30 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 	v, ok := l.clients.Load(key)
 	if !ok {
 		//new client? check token
-		token, ok := decodeHelloFrame(data)
+		hello, ok := decodeHelloFrame(data)
 		if !ok {
 			return nil, true
 		}
-		ok, err := VerifyToken(token)
+		policy, ok, err := l.authorizeHello(hello, l.LocalAddr().(*net.UDPAddr), udpaddr)
 		if !ok {
-			l.logger.Errorf("getUDPConn, VerifyToken err:%v, remote:%v", err, addr)
+			l.logger.Errorf("getUDPConn, auth policy reject err:%v, remote:%v", err, addr)
 			return nil, true
 		}
 
 		//new udpConn, 由listener 产生的conn, 发送数据时，有listener conn 批量发送，所以这里要设置batchs = 0, 其实设不设置都可以
 		// 如果listener 设置了oneshotRead, 那么它产生是UDPConn 也应该设置oneshotRead
-		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked))
-		n := copy(uc.token[:], token)
+		uc = NewUDPConn(l, l.lconn, false, udpaddr, WithBatchs(0), WithMaxPacketSize(l.maxPacketSize), WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked), withDataSeqEnabled(policy.EnableDataSeq))
+		n := copy(uc.token[:], hello.Token)
 		if n != tokenSize {
 			panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 		}
 
-		if _, err := uc.lconn.WriteTo(encodeFrame(frameTypeHelloAck, token), addr); err != nil {
+		ack, err := encodeHelloAckFrame(hello.Token, policy)
+		if err != nil {
+			l.logger.Errorf("%v, token:%v, encode hello ack err:%v", l, uc.token, err)
+			return nil, true
+		}
+		if _, err := uc.lconn.WriteTo(ack, addr); err != nil {
 			l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 			return nil, true
 		}
@@ -558,6 +607,10 @@ func (l *Listener) getUDPConn(addr net.Addr, data []byte) (uc *UDPConn, isCtrlDa
 		atomic.AddInt64(&l.clientCount, 1)
 		//这里如何阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
 		l.accept <- uc
+		if uc.dataSeqEnabled {
+			uc.startSeqStatsLoopOnce()
+		}
+
 		return uc, true
 	}
 	uc = v.(*UDPConn)

@@ -6,6 +6,37 @@ import (
 	"time"
 )
 
+// UDPX协议格式和大小定义：
+//
+// 所有 UDPX 报文都以 3 字节公共帧头开始：
+//
+//	0               1               2
+//	+---------------+---------------+---------------+
+//	| magic(0x5558)                 | ver(2b)|type(6b)|
+//	+---------------+---------------+---------------+
+//	| payload ...
+//
+// magic 使用大端 uint16，固定为 "UX"，用于快速过滤非 UDPX 报文。
+// 第 3 字节高 2 bit 是协议版本，低 6 bit 是帧类型；当前版本为 1，
+// 因此最多可表达 4 个版本和 64 种帧类型。
+//
+// frameTypeData 的 payload 是用户数据本身。
+// frameTypeDataSeq 的 payload 前 8 字节为大端 uint64 seq，后面才是用户数据，
+// 用于按连接统计乱序、丢包和迟到包。
+//
+// Hello payload:
+//
+//	version(1) | flags(1) | token(tokenSize) | authLen(uint16) | authData
+//
+// HelloAck payload:
+//
+//	version(1) | flags(1) | token(tokenSize)
+//
+// Stats payload:
+//
+//	txPackets | rxPackets | rxDropPkts | txDropPkts | timestampMs
+//
+// 以上字段均为大端 uint64，每个 8 字节，共 40 字节。
 const (
 	frameHeaderLen = 3
 	frameMagic     = uint16(0x5558) // "UX"
@@ -28,12 +59,39 @@ const (
 	dataSeqHeaderLen     = 8 // seq uint64
 )
 
+const (
+	helloPayloadVersion   byte = 1
+	helloPayloadHeaderLen      = 1 + 1 + tokenSize + 2
+	helloAckPayloadLen         = 1 + 1 + tokenSize
+)
+
+const (
+	helloFlagDataSeqCapable byte = 1 << iota
+	helloFlagDataSeqRequested
+)
+
+const (
+	helloAckFlagDataSeqEnabled byte = 1 << iota
+)
+
 type ConnStats struct {
 	TxPackets   uint64
 	RxPackets   uint64
 	RxDropPkts  uint64
 	TxDropPkts  uint64
 	TimestampMs uint64
+}
+
+type helloFrame struct {
+	Token             []byte
+	AuthData          []byte
+	ClientCanDataSeq  bool
+	ClientWantDataSeq bool
+}
+
+type helloAckFrame struct {
+	Token          []byte
+	DataSeqEnabled bool
 }
 
 func makeVerType(version, typ byte) byte {
@@ -105,20 +163,81 @@ func decodeFrame(b []byte) (version byte, typ byte, payload []byte, ok bool) {
 	return version, typ, b[frameHeaderLen:], true
 }
 
-func decodeHelloFrame(b []byte) (token []byte, ok bool) {
-	_, typ, payload, ok := decodeFrame(b)
-	if !ok || typ != frameTypeHello || len(payload) != tokenSize {
-		return nil, false
+func encodeHelloFrame(token, authData []byte, clientCanDataSeq, clientWantDataSeq bool) ([]byte, error) {
+	if len(token) != tokenSize {
+		return nil, fmt.Errorf("invalid hello token len:%d", len(token))
 	}
-	return payload, true
+	if len(authData) > 0xffff {
+		return nil, fmt.Errorf("hello auth data too large:%d", len(authData))
+	}
+	flags := byte(0)
+	if clientCanDataSeq {
+		flags |= helloFlagDataSeqCapable
+	}
+	if clientWantDataSeq {
+		flags |= helloFlagDataSeqRequested
+	}
+
+	payload := make([]byte, helloPayloadHeaderLen+len(authData))
+	payload[0] = helloPayloadVersion
+	payload[1] = flags
+	copy(payload[2:2+tokenSize], token)
+	binary.BigEndian.PutUint16(payload[2+tokenSize:helloPayloadHeaderLen], uint16(len(authData)))
+	copy(payload[helloPayloadHeaderLen:], authData)
+	return encodeFrame(frameTypeHello, payload), nil
 }
 
-func decodeHelloAckFrame(b []byte) (token []byte, ok bool) {
+func decodeHelloFrame(b []byte) (helloFrame, bool) {
 	_, typ, payload, ok := decodeFrame(b)
-	if !ok || typ != frameTypeHelloAck || len(payload) != tokenSize {
-		return nil, false
+	if !ok || typ != frameTypeHello {
+		return helloFrame{}, false
 	}
-	return payload, true
+	return decodeHelloPayload(payload)
+}
+
+func decodeHelloPayload(payload []byte) (helloFrame, bool) {
+	if len(payload) < helloPayloadHeaderLen || payload[0] != helloPayloadVersion {
+		return helloFrame{}, false
+	}
+	authDataLen := int(binary.BigEndian.Uint16(payload[2+tokenSize : helloPayloadHeaderLen]))
+	if len(payload) != helloPayloadHeaderLen+authDataLen {
+		return helloFrame{}, false
+	}
+	flags := payload[1]
+	return helloFrame{
+		Token:             cloneBytes(payload[2 : 2+tokenSize]),
+		AuthData:          cloneBytes(payload[helloPayloadHeaderLen:]),
+		ClientCanDataSeq:  flags&helloFlagDataSeqCapable != 0,
+		ClientWantDataSeq: flags&helloFlagDataSeqRequested != 0,
+	}, true
+}
+
+func encodeHelloAckFrame(token []byte, policy SessionPolicy) ([]byte, error) {
+	if len(token) != tokenSize {
+		return nil, fmt.Errorf("invalid hello ack token len:%d", len(token))
+	}
+	flags := byte(0)
+	if policy.EnableDataSeq {
+		flags |= helloAckFlagDataSeqEnabled
+	}
+
+	payload := make([]byte, helloAckPayloadLen)
+	payload[0] = helloPayloadVersion
+	payload[1] = flags
+	copy(payload[2:], token)
+	return encodeFrame(frameTypeHelloAck, payload), nil
+}
+
+func decodeHelloAckFrame(b []byte) (helloAckFrame, bool) {
+	_, typ, payload, ok := decodeFrame(b)
+	if !ok || typ != frameTypeHelloAck || len(payload) != helloAckPayloadLen || payload[0] != helloPayloadVersion {
+		return helloAckFrame{}, false
+	}
+	flags := payload[1]
+	return helloAckFrame{
+		Token:          cloneBytes(payload[2:]),
+		DataSeqEnabled: flags&helloAckFlagDataSeqEnabled != 0,
+	}, true
 }
 
 func encodeStatsPayload(s ConnStats) []byte {

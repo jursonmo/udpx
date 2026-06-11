@@ -151,27 +151,27 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	// }
 
 	//新的client数据, 第一个必须是握手 Hello 报文
-	token, ok := decodeHelloFrame(data)
+	hello, ok := decodeHelloFrame(data)
 	if !ok {
 		l.logger.Errorf("CreateUDPConnByDstAddr, first data is not hello frame, len:%d, remote:%v", len(data), raddr)
 		return
 	}
-	ok, err := VerifyToken(token)
+	policy, ok, err := l.authorizeHello(hello, laddr, raddr)
 	if !ok {
-		l.logger.Errorf("CreateUDPConnByDstAddr, VerifyToken err:%v, remote:%v", err, raddr)
+		l.logger.Errorf("CreateUDPConnByDstAddr, auth policy reject err:%v, remote:%v", err, raddr)
 		return
 	}
 
-	l.logger.Infof("CreateUDPConnByDstAddr, laddr=%s://%v, raddr:%v", laddr.Network(), laddr.String(), raddr)
 	lconn, err := l.newUDPConnBindAddr(laddr, raddr)
 	if err != nil {
+		l.logger.Infof("CreateUDPConnByDstAddr, laddr=%s://%v, raddr:%v, err:%v", laddr.Network(), laddr.String(), raddr, err)
 		panic(err)
 	}
 	//查看bind端口的情况: lsof -an -p $pid
 
 	uc := NewUDPConn(l, lconn, true, raddr, WithBatchs(l.batchs), WithMaxPacketSize(l.maxPacketSize),
-		WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked), WithUCLogger(l.logger))
-	n := copy(uc.token[:], token)
+		WithOneshotRead(l.oneshotRead), WithTxBlocked(l.txBlocked), WithUCLogger(l.logger), withDataSeqEnabled(policy.EnableDataSeq))
+	n := copy(uc.token[:], hello.Token)
 	if n != tokenSize {
 		panic(fmt.Sprintf("%v, token:%v, copy token fail, n:%d, tokenSize:%d", l, uc.token, n, tokenSize))
 	}
@@ -183,7 +183,13 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 	}
 
 	//if _, err := uc.lconn.WriteTo(data, addr); err != nil {
-	if _, err := uc.lconn.Write(encodeFrame(frameTypeHelloAck, token)); err != nil {
+	ack, err := encodeHelloAckFrame(hello.Token, policy)
+	if err != nil {
+		l.logger.Errorf("%v, token:%v, encode hello ack err:%v", l, uc.token, err)
+		lconn.Close()
+		return
+	}
+	if _, err := uc.lconn.Write(ack); err != nil {
 		l.logger.Errorf("%v, token:%v, write to addr:%v, err:%v", l, addr, uc.token, addr, err)
 		lconn.Close()
 		return
@@ -204,11 +210,14 @@ func (l *Listener) CreateUDPConnByDstAddr(laddr *net.UDPAddr, addr net.Addr, dat
 		go uc.writeBatchLoop()
 	}
 
-	l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, token:%v", l, addr, uc.token)
+	//l.logger.Infof("CreateUDPConnByDstAddr, listener:%v, new conn:%v, token:%v", l, uc, uc.token)
 	l.clients.Store(key, uc)
 	atomic.AddInt64(&l.clientCount, 1)
 	//TODO:这里如果阻塞, 会影响后面的处理，但是这个理论上不会阻塞，阻塞说明程序负载很大了
 	l.accept <- uc
+	if uc.dataSeqEnabled {
+		uc.startSeqStatsLoopOnce()
+	}
 }
 
 // 从辅助数据中解析目的地址

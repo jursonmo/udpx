@@ -188,8 +188,14 @@ func (c *UDPConn) PutRxQueue2(b MyBuffer) error {
 		}
 	case frameTypeHello:
 		// 服务端连接收到重复 Hello，说明客户端可能没收到 HelloAck，可以重发 ack；客户端侧直接丢弃。
-		if c.ln != nil && bytes.Equal(payload, c.token[:]) {
-			_, err := c.writeControlFrame(frameTypeHelloAck, c.token[:])
+		hello, ok := decodeHelloPayload(payload)
+		if c.ln != nil && ok && bytes.Equal(hello.Token, c.token[:]) {
+			ack, err := encodeHelloAckFrame(c.token[:], SessionPolicy{EnableDataSeq: c.dataSeqEnabled})
+			if err != nil {
+				Release(b)
+				return err
+			}
+			_, err = c.writeRaw(ack)
 			Release(b)
 			return err
 		}

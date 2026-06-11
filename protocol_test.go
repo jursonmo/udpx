@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -118,6 +119,27 @@ func TestUDPXStatsControlFrame(t *testing.T) {
 	}
 }
 
+func TestUDPXAuthPolicyControlsDataSeqSharedListener(t *testing.T) {
+	oldPktInfo := IP_PKTINFO_ENABLE
+	IP_PKTINFO_ENABLE = false
+	defer func() { IP_PKTINFO_ENABLE = oldPktInfo }()
+
+	t.Run("seq on", func(t *testing.T) {
+		testUDPXAuthPolicyControlsDataSeq(t, 0, "seq-on", true)
+	})
+	t.Run("seq off", func(t *testing.T) {
+		testUDPXAuthPolicyControlsDataSeq(t, 0, "seq-off", false)
+	})
+}
+
+func TestUDPXAuthPolicyControlsDataSeqStandaloneConn(t *testing.T) {
+	oldPktInfo := IP_PKTINFO_ENABLE
+	IP_PKTINFO_ENABLE = true
+	defer func() { IP_PKTINFO_ENABLE = oldPktInfo }()
+
+	testUDPXAuthPolicyControlsDataSeq(t, 8, "seq-on", true)
+}
+
 func testUDPXEcho(t *testing.T, batchs int) {
 	SetGlobalLogger(NoopLogger{})
 	addr := freeUDPAddr(t)
@@ -195,6 +217,97 @@ func testUDPXEcho(t *testing.T, batchs int) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for echo server")
+	}
+}
+
+func testUDPXAuthPolicyControlsDataSeq(t *testing.T, batchs int, authData string, wantSeq bool) {
+	t.Helper()
+	SetGlobalLogger(NoopLogger{})
+
+	addr := freeUDPAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var policyCalls int32
+	policy := func(info AuthInfo) (SessionPolicy, bool, error) {
+		atomic.AddInt32(&policyCalls, 1)
+		ok, err := VerifyToken(info.Token)
+		if !ok {
+			return SessionPolicy{}, false, err
+		}
+		return SessionPolicy{
+			EnableDataSeq: string(info.AuthData) == "seq-on" && info.ClientCanDataSeq && info.ClientWantDataSeq,
+		}, true, nil
+	}
+
+	ln, err := NewUdpListen(ctx, "udp", addr, WithListenerNum(1), Batchs(batchs), MaxPacketSize(1700), WithAuthPolicy(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan *UDPConn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn.(*UDPConn)
+	}()
+
+	c, err := DialWithOpt(context.Background(), "udp", "", addr, WithBatchs(batchs), WithMaxPacketSize(1700), WithAuthData([]byte(authData)), WithDataSeqRequest(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	var serverConn *UDPConn
+	select {
+	case serverConn = <-accepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for accepted conn")
+	}
+
+	if got := atomic.LoadInt32(&policyCalls); got != 1 {
+		t.Fatalf("policy calls=%d, want 1", got)
+	}
+	if c.dataSeqEnabled != wantSeq {
+		t.Fatalf("client dataSeqEnabled=%v, want %v", c.dataSeqEnabled, wantSeq)
+	}
+	if serverConn.dataSeqEnabled != wantSeq {
+		t.Fatalf("server dataSeqEnabled=%v, want %v", serverConn.dataSeqEnabled, wantSeq)
+	}
+
+	payload := []byte("hello seq policy")
+	if _, err := c.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, 1700)
+	n, err := serverConn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("server payload=%v, want %v", buf[:n], payload)
+	}
+
+	if _, err := serverConn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	n, err = c.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("client payload=%v, want %v", buf[:n], payload)
+	}
+
+	if got := atomic.LoadUint32(&serverConn.rxSeqInited) != 0; got != wantSeq {
+		t.Fatalf("server rxSeqInited=%v, want %v", got, wantSeq)
+	}
+	if got := atomic.LoadUint32(&c.rxSeqInited) != 0; got != wantSeq {
+		t.Fatalf("client rxSeqInited=%v, want %v", got, wantSeq)
 	}
 }
 
