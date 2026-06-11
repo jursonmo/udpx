@@ -244,7 +244,7 @@ func normalizeStatsInterval(interval time.Duration) time.Duration {
 func logDebugStatsDelta(logger Logger, now, last ConnDebugStats) {
 	// 只有当内核丢包或 udpx 丢包时才打印日志，避免周期日志过多干扰正常使用。
 	if now.Kernel.Drops == 0 && now.RxDropPkts == 0 && now.TxDropPkts == 0 {
-		logger.Infof("no drops, skip debug stats log for %s local=%s remote=%s ", now.Name, now.LocalAddr, now.RemoteAddr)
+		logger.Debugf("no drops, skip debug stats log for %s local=%s remote=%s ", now.Name, now.LocalAddr, now.RemoteAddr)
 		return
 	}
 

@@ -87,7 +87,7 @@ func (c *UDPConn) checkRxSeq(seq uint64, payloadLen int) {
 
 func (c *UDPConn) startSeqStatsLoop() {
 	c.logger.Infof("start udpx seq stats loop, local=%v remote=%v", c.LocalAddr(), c.RemoteAddr())
-	defer c.logger.Infof("exit udpx seq stats loop, local=%v remote=%v", c.LocalAddr(), c.RemoteAddr())
+	defer c.logger.Errorf("exit udpx seq stats loop, local=%v remote=%v", c.LocalAddr(), c.RemoteAddr())
 
 	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
