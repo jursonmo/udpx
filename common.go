@@ -1,6 +1,6 @@
 package udpx
 
-var defaultBatchs = 8
+var defaultBatchs = 16
 
 // 个人觉得, udp 应用层不应该发送超过mtu 1500的报文, 那样导致ip分片，
 // 丢任意一个分片都导致整个报文丢弃，特别是udp, 运营商特别容易丢弃udp的报文。
@@ -8,6 +8,6 @@ var defaultBatchs = 8
 // 就没必要发送一个大小超过mtu 值的报文。
 var defaultMaxPacketSize = 1600
 
-var txqueueBlocked = true //全局默认值, 意思是批量发送时, 发送队列满了，是否阻塞
+var txqueueBlocked = true //全局默认值, 意思是批量发送时, 发送队列满了，是否阻塞, 这样不会出现txDrop的情况(txqueueBlocked只有批量发送才起作用)
 var defaultTxQueueLen = 1024
 var IP_PKTINFO_ENABLE = true
