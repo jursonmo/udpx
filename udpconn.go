@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -296,7 +295,7 @@ func (c *UDPConn) Close() error {
 	if c.standalone && c.lconn != nil {
 		c.lconn.Close()
 	}
-	log.Printf("udpx client:%v, %s->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
+	c.logger.Errorf("udpx client:%v, %s->%s, close over\n", c.client, c.LocalAddr().String(), c.RemoteAddr().String())
 	return nil
 }
 
@@ -592,7 +591,8 @@ func (c *UDPConn) setPeerStats(s ConnStats) {
 }
 
 func (c *UDPConn) writeBatchLoop() {
-	defer log.Printf("client %v, writeBatchLoop quit", c.pc.LocalAddr())
+	defer c.logger.Errorf("client %v, writeBatchLoop quit", c.pc.LocalAddr())
+
 	bw, _ := NewPCBioWriter(c.pc, c.writeBatchs)
 	if c.txqueue == nil {
 		c.txqueue = make(chan MyBuffer, c.txqueuelen)

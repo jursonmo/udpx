@@ -108,9 +108,9 @@ func (c *UDPConn) readBatchLoopv2() error {
 	rms := make([]ipv4.Message, c.readBatchs)
 	buffers := make([]MyBuffer, c.readBatchs)
 	n := len(rms)
-	log.Printf("client:%v->%v,read batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....",
+	c.logger.Infof("client:%v->%v,read batchs:%d, maxPacketSize:%d, readLoopv2(use MyBuffer)....",
 		c.LocalAddr(), c.RemoteAddr(), c.readBatchs, c.maxBufSize)
-	defer func() { log.Printf("%v readBatchLoopv2 quit, err:%v", c, err) }()
+	defer func() { c.logger.Errorf("%v readBatchLoopv2 quit, err:%v", c, err) }()
 
 	checkLen := int(0)
 	//检查
